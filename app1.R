@@ -435,12 +435,13 @@ body {
 # =============================================================================
 # UI
 # =============================================================================
-ui <- navbarPage(
+ui <- tagList(
+  useShinyjs(),
+  tags$head(tags$style(HTML(custom_css))),
+  navbarPage(
   title = span(icon("chart-line"), " Data Explorer"),
   id = "main_navbar",
   theme = bs_theme(version = 5, bootswatch = "flatly"),
-  useShinyjs(),
-  header = tags$head(tags$style(HTML(custom_css))),
 
   tabPanel(
     "User Guide",
@@ -581,11 +582,25 @@ ui <- navbarPage(
                div(class = "preview-card",
                    h5(icon("flask"), " A/B Testing Session Info"),
                    p("This experiment changes only one interface variable: the demo CTA button text. All other app behavior remains identical across groups."),
-                   htmlOutput("ab_session_info"),
-                   br(),
-                   downloadButton("download_ab_metrics", "Download A/B Metrics", class = "btn-primary"),
-                   br(), br(),
-                   tags$small("Tip: append ?group=A or ?group=B to the app URL to force a control or treatment version during testing.")
+                   tags$details(
+                     tags$summary(
+                       style = "cursor: pointer; font-weight: 600; color: #2c3e50; margin-bottom: 0.75rem;",
+                       icon("shield-halved"),
+                       " Experiment Diagnostics (for grading/review)"
+                     ),
+                     tags$div(
+                       style = "margin-top: 1rem;",
+                       tags$p(
+                         class = "mb-3",
+                         "Detailed assignment and event-tracking information is hidden by default so it does not distract from normal app use. Expand this section for grading, QA, or experiment review."
+                       ),
+                       htmlOutput("ab_session_info"),
+                       br(),
+                       downloadButton("download_ab_metrics", "Download A/B Metrics", class = "btn-primary"),
+                       br(), br(),
+                       tags$small("Tip: append ?group=A or ?group=B to the app URL to force a control or treatment version during testing.")
+                     )
+                   )
                ),
                br(),
                uiOutput("text_editor_ui")
@@ -816,6 +831,7 @@ ui <- navbarPage(
       div(class = "app-footer", "Project 3: Data Explorer — A/B Testing Experiment, Spring 2026")
     )
   )
+  )
 )
 
 # =============================================================================
@@ -826,14 +842,11 @@ server <- function(input, output, session) {
   current_text_name <- reactiveVal(NULL)
 
   # ---- A/B testing: session-level assignment for demo CTA --------------------
-  query_params <- parseQueryString(session$clientData$url_search %||% "")
-  requested_group <- toupper(trimws(query_params[["group"]] %||% ""))
-  assigned_group <- if (requested_group %in% c("A", "B")) requested_group else sample(c("A", "B"), size = 1)
-  assignment_method <- if (requested_group %in% c("A", "B")) "URL parameter" else "Random session assignment"
   session_start_time <- Sys.time()
   session_id <- paste0("session_", format(session_start_time, "%Y%m%d%H%M%S"), "_", sample(1000:9999, 1))
   first_action_logged <- reactiveVal(FALSE)
-  ab_condition <- reactiveVal(assigned_group)
+  ab_condition <- reactiveVal(sample(c("A", "B"), size = 1))
+  assignment_method <- reactiveVal("Random session assignment")
   ab_metrics <- reactiveVal(data.frame(
     session_id = character(),
     event = character(),
@@ -845,6 +858,18 @@ server <- function(input, output, session) {
     timestamp = character(),
     stringsAsFactors = FALSE
   ))
+
+  observeEvent(session$clientData$url_search, {
+    query_params <- parseQueryString(session$clientData$url_search %||% "")
+    requested_group <- toupper(trimws(query_params[["group"]] %||% ""))
+
+    if (requested_group %in% c("A", "B")) {
+      ab_condition(requested_group)
+      assignment_method("URL parameter")
+    } else {
+      assignment_method("Random session assignment")
+    }
+  }, once = TRUE, ignoreInit = FALSE)
 
 
   # ---- Shared reactive dataset ------------------------------------------------
@@ -1182,7 +1207,7 @@ server <- function(input, output, session) {
     HTML(paste0(
       "<p><strong>Session ID:</strong> ", session_id, "</p>",
       "<p><strong>Assigned condition:</strong> ", condition_label, "</p>",
-      "<p><strong>Assignment method:</strong> ", assignment_method, "</p>",
+      "<p><strong>Assignment method:</strong> ", assignment_method(), "</p>",
       "<p><strong>Button text shown:</strong> ", button_label, "</p>",
       "<p><strong>Events logged this session:</strong> ", event_count, "</p>",
       "<p><strong>Time to first action (seconds):</strong> ", ifelse(is.na(first_action_time), "Not yet recorded", first_action_time), "</p>"
@@ -1234,7 +1259,7 @@ server <- function(input, output, session) {
   cleaned_data <- reactive({
     req(current_data())
     df <- current_data()
-  
+
       # ---- ADDED: standardization block ------------------------------
     if (isTRUE(input$trim_text) || isTRUE(input$lowercase_text) || isTRUE(input$blank_to_na) ||
         isTRUE(input$standardize_common_labels) || isTRUE(input$parse_numeric_like) ||
@@ -1243,48 +1268,48 @@ server <- function(input, output, session) {
         if (is.factor(x)) {
           x <- as.character(x)
         }
-        
+
         x <- standardize_text_column(
           x,
           trim_ws = isTRUE(input$trim_text),
           to_lower = isTRUE(input$lowercase_text),
           blank_to_na = isTRUE(input$blank_to_na)
         )
-        
+
         if (isTRUE(input$standardize_common_labels)) {
           x <- canonicalize_common_labels(x, use_lowercase = isTRUE(input$lowercase_text))
         }
-        
+
         if (isTRUE(input$parse_numeric_like)) {
           x <- try_parse_numeric_column(x)
         }
-        
+
         if (isTRUE(input$try_parse_dates) && !inherits(x, "Date")) {
           x <- try_standardize_date_column(x)
         }
-        
+
         x
       })
     }
-    
+
     if (!is.null(input$missing_method) && input$missing_method != "None") {
       if (input$missing_method == "Drop") {
         df <- na.omit(df)
-        
+
       } else if (input$missing_method == "Mean") {
         num_cols <- sapply(df, is.numeric)
         df[num_cols] <- lapply(df[num_cols], function(x) {
           x[is.na(x)] <- mean(x, na.rm = TRUE)
           x
         })
-        
+
       } else if (input$missing_method == "Median") {
         num_cols <- sapply(df, is.numeric)
         df[num_cols] <- lapply(df[num_cols], function(x) {
           x[is.na(x)] <- median(x, na.rm = TRUE)
           x
         })
-        
+
       } else if (input$missing_method == "Mode") {
         mode_func <- function(x) {
           x_non_na <- x[!is.na(x)]
@@ -1292,7 +1317,7 @@ server <- function(input, output, session) {
           ux <- unique(x_non_na)
           ux[which.max(tabulate(match(x_non_na, ux)))]
         }
-        
+
         df[] <- lapply(df, function(x) {
           fill_value <- mode_func(x)
           x[is.na(x)] <- fill_value
@@ -1300,11 +1325,11 @@ server <- function(input, output, session) {
         })
       }
     }
-    
+
     if (!is.null(input$remove_dup) && input$remove_dup) {
       df <- unique(df)
     }
-    
+
     # ---- ADDED: additional outlier treatment -----------------------
     if (!is.null(input$extra_outlier_treatment) && input$extra_outlier_treatment != "None") {
       numeric_names <- names(df)[sapply(df, is.numeric)]
@@ -1316,15 +1341,15 @@ server <- function(input, output, session) {
         }
       }
     }
-    
+
     if (!is.null(input$scaling) && input$scaling != "None") {
       num_cols <- sapply(df, is.numeric)
-      
+
       if (any(num_cols)) {
         if (input$scaling == "Standardize") {
           scaled <- scale(df[num_cols])
           df[num_cols] <- as.data.frame(scaled)
-          
+
         } else if (input$scaling == "Normalize") {
           df[num_cols] <- lapply(df[num_cols], function(x) {
             rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
@@ -1337,7 +1362,7 @@ server <- function(input, output, session) {
         }
       }
     }
-    
+
     if (!is.null(input$encoding) && input$encoding != "None") {
       if (input$encoding == "Label") {
         df[] <- lapply(df, function(x) {
@@ -1347,7 +1372,7 @@ server <- function(input, output, session) {
             x
           }
         })
-        
+
       } else if (input$encoding == "One-hot") {
         df[] <- lapply(df, function(x) {
           if (is.character(x)) as.factor(x) else x
@@ -1355,15 +1380,15 @@ server <- function(input, output, session) {
         df <- as.data.frame(model.matrix(~ . - 1, data = df))
       }
     }
-    
+
     if (!is.null(input$remove_outliers) && input$remove_outliers) {
       num_cols <- sapply(df, is.numeric)
-      
+
       for (col in names(df)[num_cols]) {
         Q1 <- quantile(df[[col]], 0.25, na.rm = TRUE)
         Q3 <- quantile(df[[col]], 0.75, na.rm = TRUE)
         IQR_val <- Q3 - Q1
-        
+
         if (!is.na(IQR_val) && IQR_val > 0) {
           lower <- Q1 - 1.5 * IQR_val
           upper <- Q3 + 1.5 * IQR_val
@@ -1372,10 +1397,10 @@ server <- function(input, output, session) {
         }
       }
     }
-    
+
     df
   })
-  
+
   output$cleaned_preview <- renderDT({
     req(cleaned_data())
     datatable(
@@ -1385,13 +1410,13 @@ server <- function(input, output, session) {
       filter = "top"
     )
   })
-  
+
   # ---- ADDED: feedback outputs ------------------------------------
   cleaning_feedback <- reactive({
     req(current_data(), cleaned_data())
     before <- current_data()
     after <- cleaned_data()
-    
+
     data.frame(
       Metric = c("Rows", "Columns", "Missing Values", "Duplicate Rows", "Numeric Columns", "Categorical Columns", "Date Columns"),
       Before = c(
@@ -1415,7 +1440,7 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   })
-  
+
   cleaning_type_changes <- reactive({
     req(current_data(), cleaned_data())
     before <- current_data()
@@ -1442,20 +1467,20 @@ server <- function(input, output, session) {
       result
     }
   })
-  
+
   output$cleaning_feedback <- renderDT({
     req(cleaning_feedback())
     datatable(cleaning_feedback(), options = list(dom = "t"), rownames = FALSE)
   })
-  
+
   output$cleaning_type_changes <- renderDT({
     req(cleaning_type_changes())
     datatable(cleaning_type_changes(), options = list(dom = "t", scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$cleaning_actions <- renderText({
     actions <- c()
-    
+
     if (isTRUE(input$trim_text)) {
       actions <- c(actions, "Trimmed whitespace in text columns")
     }
@@ -1495,15 +1520,15 @@ server <- function(input, output, session) {
     if (isTRUE(input$remove_outliers) && !is.null(input$extra_outlier_treatment) && input$extra_outlier_treatment != "None") {
       actions <- c(actions, "Note: both IQR removal and an additional outlier treatment are active.")
     }
-    
+
     if (length(actions) == 0) {
       "No cleaning steps are currently selected."
     } else {
       paste("Active cleaning steps:\n-", paste(actions, collapse = "\n- "))
     }
   })
-  
-  
+
+
   output$download_cleaned_data <- downloadHandler(
     filename = function() {
       paste0("cleaned_data_", Sys.Date(), ".csv")
@@ -1513,66 +1538,66 @@ server <- function(input, output, session) {
       utils::write.csv(cleaned_data(), file, row.names = FALSE)
     }
   )
-  
+
   # =============================================================================
   # FEATURE ENGINEERING SERVER LOGIC
   # =============================================================================
   engineered_data <- reactiveVal(NULL)
   fe_log <- reactiveVal("No feature engineering actions applied yet.")
-  
+
   observe({
     req(cleaned_data())
     engineered_data(cleaned_data())
   })
-  
+
   observe({
     req(engineered_data())
     df <- engineered_data()
-    
+
     all_cols <- names(df)
     numeric_cols <- names(df)[sapply(df, is.numeric)]
-    
+
     updateSelectInput(session, "fe_math_col1", choices = numeric_cols)
     updateSelectInput(session, "fe_math_col2", choices = numeric_cols)
-    
+
     updateSelectInput(session, "fe_bin_col", choices = numeric_cols)
-    
+
     updateSelectInput(session, "fe_inter_col1", choices = numeric_cols)
     updateSelectInput(session, "fe_inter_col2", choices = numeric_cols)
-    
+
     updateSelectInput(session, "fe_rename_old", choices = all_cols)
     updateSelectInput(session, "fe_drop_cols", choices = all_cols)
-    
+
     updateSelectInput(session, "eda_columns", choices = all_cols, selected = all_cols)
   })
-  
+
   # ---- ADDED: selector synchronization -----------------------------
   observe({
     req(engineered_data())
     df <- engineered_data()
     all_cols <- names(df)
     selected_viz_cols <- all_cols
-    
+
     if (!is.null(input$viz_columns)) {
       selected_viz_cols <- intersect(normalize_input_vector(input$viz_columns), all_cols)
       if (length(selected_viz_cols) == 0 && length(all_cols) > 0 && length(normalize_input_vector(input$viz_columns)) > 0) {
         selected_viz_cols <- all_cols
       }
     }
-    
+
     updateSelectInput(session, "viz_columns", choices = all_cols, selected = selected_viz_cols)
-    
+
     subset_df <- df
     if (length(selected_viz_cols) > 0) {
       subset_df <- df[, selected_viz_cols, drop = FALSE]
     } else {
       subset_df <- df[, 0, drop = FALSE]
     }
-    
+
     subset_cols <- names(subset_df)
     numeric_cols <- get_numeric_cols(subset_df)
     categorical_cols <- get_categorical_cols(subset_df)
-    
+
     updateSelectInput(
       session,
       "viz_filter_col",
@@ -1583,7 +1608,7 @@ server <- function(input, output, session) {
         "None"
       }
     )
-    
+
     updateSelectInput(
       session,
       "viz_color_var",
@@ -1594,7 +1619,7 @@ server <- function(input, output, session) {
         "None"
       }
     )
-    
+
     updateSelectInput(
       session,
       "viz_group_var",
@@ -1605,7 +1630,7 @@ server <- function(input, output, session) {
         "None"
       }
     )
-    
+
     updateSelectInput(
       session,
       "viz_metric_var",
@@ -1616,12 +1641,12 @@ server <- function(input, output, session) {
         "None"
       }
     )
-    
+
     plot_type <- input$viz_plot_type
     if (is.null(plot_type)) {
       plot_type <- "Histogram"
     }
-    
+
     if (plot_type == "Histogram") {
       updateSelectInput(
         session,
@@ -1629,7 +1654,7 @@ server <- function(input, output, session) {
         choices = numeric_cols,
         selected = keep_or_default(input$viz_x_var, numeric_cols, 1)
       )
-      
+
       updateSelectInput(
         session,
         "viz_y_var",
@@ -1637,17 +1662,17 @@ server <- function(input, output, session) {
         selected = character(0)
       )
     }
-    
+
     if (plot_type == "Boxplot") {
       x_choices <- c("All Data", categorical_cols)
-      
+
       updateSelectInput(
         session,
         "viz_x_var",
         choices = x_choices,
         selected = keep_or_default(input$viz_x_var, x_choices, 1)
       )
-      
+
       updateSelectInput(
         session,
         "viz_y_var",
@@ -1655,7 +1680,7 @@ server <- function(input, output, session) {
         selected = keep_or_default(input$viz_y_var, numeric_cols, 1)
       )
     }
-    
+
     if (plot_type == "Scatter Plot") {
       updateSelectInput(
         session,
@@ -1663,7 +1688,7 @@ server <- function(input, output, session) {
         choices = numeric_cols,
         selected = keep_or_default(input$viz_x_var, numeric_cols, 1)
       )
-      
+
       updateSelectInput(
         session,
         "viz_y_var",
@@ -1671,7 +1696,7 @@ server <- function(input, output, session) {
         selected = keep_or_default(input$viz_y_var, numeric_cols, 2)
       )
     }
-    
+
     if (plot_type == "Bar Chart") {
       updateSelectInput(
         session,
@@ -1679,7 +1704,7 @@ server <- function(input, output, session) {
         choices = categorical_cols,
         selected = keep_or_default(input$viz_x_var, categorical_cols, 1)
       )
-      
+
       updateSelectInput(
         session,
         "viz_y_var",
@@ -1688,33 +1713,33 @@ server <- function(input, output, session) {
       )
     }
   })
-  
+
   observeEvent(input$reset_engineering, {
     req(cleaned_data())
     engineered_data(cleaned_data())
     fe_log("Reset feature-engineered dataset back to cleaned data.")
     showNotification("Feature engineering reset to cleaned data.", type = "message")
   })
-  
+
   observeEvent(input$apply_math_feature, {
     req(engineered_data(), input$fe_new_col_math, input$fe_math_col1, input$fe_math_col2)
-    
+
     df <- engineered_data()
     new_col <- trimws(input$fe_new_col_math)
-    
+
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-    
+
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-    
+
     x <- df[[input$fe_math_col1]]
     y <- df[[input$fe_math_col2]]
-    
+
     df[[new_col]] <- switch(
       input$fe_math_operator,
       "+" = x + y,
@@ -1722,137 +1747,137 @@ server <- function(input, output, session) {
       "*" = x * y,
       "/" = ifelse(y == 0, NA, x / y)
     )
-    
+
     engineered_data(df)
     fe_log(paste0("Created math feature '", new_col, "' using ",
                   input$fe_math_col1, " ", input$fe_math_operator, " ", input$fe_math_col2, "."))
     showNotification(paste("Created new feature:", new_col), type = "message")
   })
-  
+
   observeEvent(input$apply_bin_feature, {
     req(engineered_data(), input$fe_bin_col, input$fe_bin_new_col)
-    
+
     df <- engineered_data()
     new_col <- trimws(input$fe_bin_new_col)
-    
+
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-    
+
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-    
+
     if (!is.numeric(df[[input$fe_bin_col]])) {
       showNotification("Selected column must be numeric.", type = "error")
       return()
     }
-    
+
     breaks <- unique(quantile(
       df[[input$fe_bin_col]],
       probs = seq(0, 1, length.out = input$fe_bin_k + 1),
       na.rm = TRUE
     ))
-    
+
     if (length(breaks) <= 2) {
       showNotification("Not enough unique values to create bins.", type = "error")
       return()
     }
-    
+
     df[[new_col]] <- cut(
       df[[input$fe_bin_col]],
       breaks = breaks,
       include.lowest = TRUE,
       dig.lab = 8
     )
-    
+
     engineered_data(df)
     fe_log(paste0("Created binned feature '", new_col, "' from column '",
                   input$fe_bin_col, "' with ", input$fe_bin_k, " bins."))
     showNotification(paste("Created binned feature:", new_col), type = "message")
   })
-  
+
   observeEvent(input$apply_interaction_feature, {
     req(engineered_data(), input$fe_inter_col1, input$fe_inter_col2, input$fe_inter_new_col)
-    
+
     df <- engineered_data()
     new_col <- trimws(input$fe_inter_new_col)
-    
+
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-    
+
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-    
+
     df[[new_col]] <- df[[input$fe_inter_col1]] * df[[input$fe_inter_col2]]
-    
+
     engineered_data(df)
     fe_log(paste0("Created interaction feature '", new_col, "' using ",
                   input$fe_inter_col1, " * ", input$fe_inter_col2, "."))
     showNotification(paste("Created interaction feature:", new_col), type = "message")
   })
-  
+
   observeEvent(input$apply_rename_column, {
     req(engineered_data(), input$fe_rename_old, input$fe_rename_new)
-    
+
     df <- engineered_data()
     new_name <- trimws(input$fe_rename_new)
-    
+
     if (new_name == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-    
+
     if (new_name %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-    
+
     names(df)[names(df) == input$fe_rename_old] <- new_name
     engineered_data(df)
-    
+
     fe_log(paste0("Renamed column '", input$fe_rename_old, "' to '", new_name, "'."))
     showNotification(paste("Renamed", input$fe_rename_old, "to", new_name), type = "message")
   })
-  
+
   observeEvent(input$apply_drop_columns, {
     req(engineered_data())
-    
+
     df <- engineered_data()
-    
+
     if (is.null(input$fe_drop_cols) || length(input$fe_drop_cols) == 0) {
       showNotification("Please select at least one column to drop.", type = "error")
       return()
     }
-    
+
     if (length(input$fe_drop_cols) >= ncol(df)) {
       showNotification("Cannot drop all columns.", type = "error")
       return()
     }
-    
+
     df <- df[, !(names(df) %in% input$fe_drop_cols), drop = FALSE]
     engineered_data(df)
-    
+
     fe_log(paste0("Dropped column(s): ", paste(input$fe_drop_cols, collapse = ", "), "."))
     showNotification("Selected columns dropped.", type = "warning")
   })
-  
+
   output$fe_before_preview <- renderDT({
     req(cleaned_data())
     datatable(cleaned_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$fe_after_preview <- renderDT({
     req(engineered_data())
     datatable(engineered_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$fe_log <- renderText({
     fe_log()
   })
@@ -1864,7 +1889,7 @@ server <- function(input, output, session) {
     after <- engineered_data()
     new_cols <- setdiff(names(after), names(before))
     dropped_cols <- setdiff(names(before), names(after))
-    
+
     data.frame(
       Metric = c("Rows Before", "Rows After", "Columns Before", "Columns After", "New Columns", "Dropped Columns"),
       Value = c(
@@ -1878,12 +1903,12 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   })
-  
+
   output$fe_change_summary <- renderDT({
     req(fe_change_summary())
     datatable(fe_change_summary(), options = list(dom = "t", scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$download_engineered_data <- downloadHandler(
     filename = function() {
       paste0("engineered_data_", Sys.Date(), ".csv")
@@ -1893,25 +1918,25 @@ server <- function(input, output, session) {
       utils::write.csv(engineered_data(), file, row.names = FALSE)
     }
   )
-  
+
   # =============================================================================
   # EDA SERVER LOGIC
   # =============================================================================
   eda_data <- reactive({
     req(engineered_data())
     df <- engineered_data()
-    
+
     if (!is.null(input$eda_columns) && length(input$eda_columns) > 0) {
       df <- df[, input$eda_columns, drop = FALSE]
     }
-    
+
     df
   })
-  
+
   output$eda_summary_table <- renderDT({
     req(eda_data())
     df <- eda_data()
-    
+
     summary_df <- data.frame(
       Column = names(df),
       Type = sapply(df, function(x) class(x)[1]),
@@ -1919,15 +1944,15 @@ server <- function(input, output, session) {
       Unique_Values = sapply(df, function(x) length(unique(x))),
       stringsAsFactors = FALSE
     )
-    
+
     numeric_cols <- sapply(df, is.numeric)
-    
+
     summary_df$Mean <- NA
     summary_df$Median <- NA
     summary_df$SD <- NA
     summary_df$Min <- NA
     summary_df$Max <- NA
-    
+
     if (any(numeric_cols)) {
       summary_df$Mean[numeric_cols]   <- sapply(df[numeric_cols], function(x) round(mean(x, na.rm = TRUE), 4))
       summary_df$Median[numeric_cols] <- sapply(df[numeric_cols], function(x) round(median(x, na.rm = TRUE), 4))
@@ -1935,15 +1960,15 @@ server <- function(input, output, session) {
       summary_df$Min[numeric_cols]    <- sapply(df[numeric_cols], function(x) round(min(x, na.rm = TRUE), 4))
       summary_df$Max[numeric_cols]    <- sapply(df[numeric_cols], function(x) round(max(x, na.rm = TRUE), 4))
     }
-    
+
     datatable(summary_df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$eda_corr_table <- renderDT({
     req(eda_data())
     df <- eda_data()
     numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
-    
+
     if (ncol(numeric_df) < 2) {
       return(
         datatable(
@@ -1955,34 +1980,34 @@ server <- function(input, output, session) {
         )
       )
     }
-    
+
     corr_mat <- round(cor(numeric_df, use = "pairwise.complete.obs"), 4)
     corr_df <- data.frame(Variable = rownames(corr_mat), corr_mat, check.names = FALSE)
-    
+
     datatable(
       corr_df,
       options = list(pageLength = 10, scrollX = TRUE),
       rownames = FALSE
     )
   })
-  
+
   output$eda_corr_heatmap <- renderPlot({
     req(eda_data())
     df <- eda_data()
     numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
-    
+
     if (ncol(numeric_df) < 2) {
       plot.new()
       text(0.5, 0.5, "At least two numeric columns are required for a correlation heatmap.")
       return()
     }
-    
+
     corr_mat <- cor(numeric_df, use = "pairwise.complete.obs")
-    
+
     op <- par(no.readonly = TRUE)
     on.exit(par(op))
     par(mar = c(8, 8, 3, 2))
-    
+
     image(
       1:ncol(corr_mat),
       1:nrow(corr_mat),
@@ -1992,10 +2017,10 @@ server <- function(input, output, session) {
       ylab = "",
       main = "Correlation Heatmap"
     )
-    
+
     axis(1, at = 1:ncol(corr_mat), labels = colnames(corr_mat), las = 2)
     axis(2, at = 1:nrow(corr_mat), labels = rev(rownames(corr_mat)), las = 2)
-    
+
     for (i in 1:nrow(corr_mat)) {
       for (j in 1:ncol(corr_mat)) {
         text(j, nrow(corr_mat) - i + 1, labels = sprintf("%.2f", corr_mat[i, j]), cex = 0.8)
@@ -2009,9 +2034,9 @@ server <- function(input, output, session) {
   viz_data <- reactive({
     req(engineered_data())
     df <- engineered_data()
-    
+
     viz_columns_selected <- normalize_input_vector(input$viz_columns)
-    
+
     if (!is.null(input$viz_columns) && length(viz_columns_selected) > 0) {
       viz_columns_selected <- intersect(viz_columns_selected, names(df))
       if (length(viz_columns_selected) == 0) {
@@ -2021,21 +2046,21 @@ server <- function(input, output, session) {
     } else if (!is.null(input$viz_columns) && length(viz_columns_selected) == 0) {
       df <- df[, 0, drop = FALSE]
     }
-    
+
     df
   })
-  
+
   filtered_viz_data <- reactive({
     req(viz_data())
     df <- viz_data()
     filter_col <- input$viz_filter_col
-    
+
     if (is.null(filter_col) || filter_col == "None" || !(filter_col %in% names(df))) {
       return(df)
     }
-    
+
     x <- df[[filter_col]]
-    
+
     if (inherits(x, "Date")) {
       if (!is.null(input$viz_filter_date) && length(input$viz_filter_date) == 2) {
         start_date <- as.Date(input$viz_filter_date[1])
@@ -2054,21 +2079,21 @@ server <- function(input, output, session) {
         df <- df[keep, , drop = FALSE]
       }
     }
-    
+
     df
   })
-  
+
   output$viz_filter_value_ui <- renderUI({
     req(viz_data())
     df <- viz_data()
     filter_col <- input$viz_filter_col
-    
+
     if (is.null(filter_col) || filter_col == "None" || !(filter_col %in% names(df))) {
       return(NULL)
     }
-    
+
     x <- df[[filter_col]]
-    
+
     if (inherits(x, "Date")) {
       values <- x[!is.na(x)]
       if (length(values) == 0) {
@@ -2083,7 +2108,7 @@ server <- function(input, output, session) {
         )
       )
     }
-    
+
     if (is.numeric(x)) {
       rng <- range(x, na.rm = TRUE)
       if (!all(is.finite(rng))) {
@@ -2102,7 +2127,7 @@ server <- function(input, output, session) {
         )
       )
     }
-    
+
     choices <- sort(unique(as.character(x)))
     choices <- choices[!is.na(choices)]
     if (length(choices) == 0) {
@@ -2116,7 +2141,7 @@ server <- function(input, output, session) {
       multiple = TRUE
     )
   })
-  
+
   output$viz_preview <- renderDT({
     req(filtered_viz_data())
     datatable(
@@ -2126,16 +2151,16 @@ server <- function(input, output, session) {
       filter = "top"
     )
   })
-  
+
   output$viz_overview <- renderUI({
     req(filtered_viz_data())
     df <- filtered_viz_data()
-    
+
     num_cols <- length(get_numeric_cols(df))
     categorical_cols <- length(get_categorical_cols(df))
     date_cols <- length(get_date_cols(df))
     missing_vals <- sum(is.na(df))
-    
+
     div(
       class = "stat-grid",
       div(class = "stat-box",
@@ -2158,13 +2183,13 @@ server <- function(input, output, session) {
           span(class = "stat-label", "Missing"))
     )
   })
-  
+
   group_summary_data <- reactive({
     req(filtered_viz_data())
     df <- filtered_viz_data()
     group_var <- input$viz_group_var
     metric_var <- input$viz_metric_var
-    
+
     if (is.null(group_var) || group_var == "None" || !(group_var %in% names(df)) ||
         is.null(metric_var) || metric_var == "None" || !(metric_var %in% names(df)) ||
         !is.numeric(df[[metric_var]])) {
@@ -2173,21 +2198,21 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       ))
     }
-    
+
     temp <- data.frame(
       Group = as.character(df[[group_var]]),
       Metric = df[[metric_var]],
       stringsAsFactors = FALSE
     )
     temp <- temp[!is.na(temp$Group) & temp$Group != "", , drop = FALSE]
-    
+
     if (nrow(temp) == 0) {
       return(data.frame(
         Message = "No grouped observations are available for the current filter settings.",
         stringsAsFactors = FALSE
       ))
     }
-    
+
     split_metric <- split(temp$Metric, temp$Group)
     summary_df <- data.frame(
       Group = names(split_metric),
@@ -2199,15 +2224,15 @@ server <- function(input, output, session) {
       Max = sapply(split_metric, function(x) round(max(x, na.rm = TRUE), 4)),
       stringsAsFactors = FALSE
     )
-    
+
     summary_df[order(summary_df$Count, decreasing = TRUE), , drop = FALSE]
   })
-  
+
   output$viz_group_summary <- renderDT({
     req(group_summary_data())
     datatable(group_summary_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
   })
-  
+
   output$download_viz_data <- downloadHandler(
     filename = function() {
       paste0("interactive_eda_filtered_", Sys.Date(), ".csv")
@@ -2217,17 +2242,17 @@ server <- function(input, output, session) {
       utils::write.csv(filtered_viz_data(), file, row.names = FALSE)
     }
   )
-  
+
   output$viz_dynamic_insights <- renderText({
     req(filtered_viz_data())
     df <- filtered_viz_data()
-    
+
     if (nrow(df) == 0) {
       return("No rows are available after the current filter settings.")
     }
-    
+
     plot_type <- input$viz_plot_type
-    
+
     if (plot_type == "Histogram") {
       x_var <- input$viz_x_var
       if (is.null(x_var) || !(x_var %in% names(df)) || !is.numeric(df[[x_var]])) {
@@ -2252,7 +2277,7 @@ server <- function(input, output, session) {
         sep = "\n"
       ))
     }
-    
+
     if (plot_type == "Boxplot") {
       y_var <- input$viz_y_var
       x_var <- input$viz_x_var
@@ -2285,7 +2310,7 @@ server <- function(input, output, session) {
         sep = "\n"
       ))
     }
-    
+
     if (plot_type == "Scatter Plot") {
       x_var <- input$viz_x_var
       y_var <- input$viz_y_var
@@ -2316,7 +2341,7 @@ server <- function(input, output, session) {
         sep = "\n"
       ))
     }
-    
+
     if (plot_type == "Bar Chart") {
       x_var <- input$viz_x_var
       if (is.null(x_var) || !(x_var %in% names(df))) {
@@ -2344,29 +2369,30 @@ server <- function(input, output, session) {
         sep = "\n"
       ))
     }
-    
+
     "Interactive plot insights are not available for the current settings."
   })
-  
+
   output$viz_plot <- renderPlotly({
     req(filtered_viz_data())
     df <- filtered_viz_data()
-    
+
     shiny::validate(
       shiny::need(nrow(df) > 0, "No rows are available after the current filter settings."),
       shiny::need(ncol(df) > 0, "Select at least one column in the Interactive EDA tab.")
     )
-    
+
     plot_type <- input$viz_plot_type
     color_var <- input$viz_color_var
     use_color <- !is.null(color_var) && color_var != "None" && color_var %in% names(df)
-    
+
     if (plot_type == "Histogram") {
       x_var <- input$viz_x_var
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a numeric X variable for the histogram."),
         shiny::need(is.numeric(df[[x_var]]), "Histogram requires a numeric X variable.")
       )
+
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2384,6 +2410,7 @@ server <- function(input, output, session) {
           nbinsx = input$viz_bins
         )
       }
+
       p <- layout(
         p,
         title = paste("Histogram of", x_var),
@@ -2393,20 +2420,23 @@ server <- function(input, output, session) {
       )
       return(p)
     }
-    
+
     if (plot_type == "Boxplot") {
       x_var <- input$viz_x_var
       y_var <- input$viz_y_var
+
       shiny::validate(
         shiny::need(!is.null(y_var) && y_var %in% names(df), "Select a numeric Y variable for the boxplot."),
         shiny::need(is.numeric(df[[y_var]]), "Boxplot requires a numeric Y variable.")
       )
+
       if (is.null(x_var) || x_var == "All Data") {
         p <- plot_ly(
           df,
           y = plot_formula(y_var),
           type = "box"
         )
+
         p <- layout(
           p,
           title = paste("Boxplot of", y_var),
@@ -2415,9 +2445,11 @@ server <- function(input, output, session) {
         )
         return(p)
       }
+
       shiny::validate(
         shiny::need(x_var %in% names(df), "Select a valid grouping variable for the boxplot.")
       )
+
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2434,6 +2466,7 @@ server <- function(input, output, session) {
           type = "box"
         )
       }
+
       p <- layout(
         p,
         title = paste("Boxplot of", y_var, "by", x_var),
@@ -2442,16 +2475,18 @@ server <- function(input, output, session) {
       )
       return(p)
     }
-    
+
     if (plot_type == "Scatter Plot") {
       x_var <- input$viz_x_var
       y_var <- input$viz_y_var
+
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a numeric X variable for the scatter plot."),
         shiny::need(!is.null(y_var) && y_var %in% names(df), "Select a numeric Y variable for the scatter plot."),
         shiny::need(is.numeric(df[[x_var]]), "Scatter plot requires a numeric X variable."),
         shiny::need(is.numeric(df[[y_var]]), "Scatter plot requires a numeric Y variable.")
       )
+
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2470,6 +2505,7 @@ server <- function(input, output, session) {
           mode = "markers"
         )
       }
+
       if (isTRUE(input$viz_add_trendline)) {
         complete_idx <- complete.cases(df[, c(x_var, y_var), drop = FALSE])
         if (sum(complete_idx) >= 2) {
@@ -2478,77 +2514,67 @@ server <- function(input, output, session) {
             y = df[[y_var]][complete_idx]
           )
           fit <- lm(y ~ x, data = fit_df)
-          trend_df <- data.frame(x = seq(min(fit_df$x), max(fit_df$x), length.out = 100))
-          trend_df$y <- predict(fit, newdata = trend_df)
+          x_seq <- seq(min(fit_df$x), max(fit_df$x), length.out = 100)
+          trend_df <- data.frame(
+            x = x_seq,
+            y = predict(fit, newdata = data.frame(x = x_seq))
+          )
           p <- add_lines(
             p,
             data = trend_df,
             x = ~x,
             y = ~y,
-            name = "Trend Line",
-            inherit = FALSE
+            inherit = FALSE,
+            name = "Trend Line"
           )
         }
       }
+
       p <- layout(
         p,
-        title = paste("Scatter Plot:", y_var, "vs", x_var),
+        title = paste("Scatter Plot of", y_var, "vs", x_var),
         xaxis = list(title = x_var),
         yaxis = list(title = y_var)
       )
       return(p)
     }
-    
+
     if (plot_type == "Bar Chart") {
       x_var <- input$viz_x_var
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a categorical X variable for the bar chart.")
       )
-      
-      if (use_color && color_var != x_var) {
-        counts <- as.data.frame(table(Category = df[[x_var]], Group = df[[color_var]], useNA = "no"), stringsAsFactors = FALSE)
-        names(counts)[3] <- "Count"
-        counts <- counts[counts$Count > 0, , drop = FALSE]
-        shiny::validate(shiny::need(nrow(counts) > 0, "No non-missing category counts are available for the selected bar chart."))
-        p <- plot_ly(
-          counts,
-          x = ~Category,
-          y = ~Count,
-          color = ~Group,
-          type = "bar"
-        )
-        p <- layout(
-          p,
-          title = paste("Bar Chart of", x_var, "grouped by", color_var),
-          xaxis = list(title = x_var),
-          yaxis = list(title = "Count"),
-          barmode = "stack"
-        )
-      } else {
-        counts <- as.data.frame(table(Category = df[[x_var]], useNA = "no"), stringsAsFactors = FALSE)
-        names(counts) <- c("Category", "Count")
-        counts <- counts[counts$Count > 0, , drop = FALSE]
-        shiny::validate(shiny::need(nrow(counts) > 0, "No non-missing category counts are available for the selected bar chart."))
-        p <- plot_ly(
-          counts,
-          x = ~Category,
-          y = ~Count,
-          type = "bar"
-        )
-        p <- layout(
-          p,
-          title = paste("Bar Chart of", x_var),
-          xaxis = list(title = x_var),
-          yaxis = list(title = "Count")
-        )
-      }
+
+      count_df <- as.data.frame(table(df[[x_var]], useNA = "no"), stringsAsFactors = FALSE)
+      names(count_df) <- c("Category", "Count")
+      count_df <- count_df[count_df$Category != "", , drop = FALSE]
+
+      shiny::validate(
+        shiny::need(nrow(count_df) > 0, "The selected bar-chart variable has no non-missing values.")
+      )
+
+      p <- plot_ly(
+        count_df,
+        x = ~Category,
+        y = ~Count,
+        type = "bar"
+      )
+
+      p <- layout(
+        p,
+        title = paste("Bar Chart of", x_var),
+        xaxis = list(title = x_var),
+        yaxis = list(title = "Count")
+      )
       return(p)
     }
-    
-    plot_ly()
+
+    plotly_empty(type = "scatter", mode = "markers")
   })
 }
 
-# ---- Run App -----------------------------------------------------------------
-shinyApp(ui = ui, server = server)
+app <- shinyApp(ui = ui, server = server)
 
+if (interactive()) {
+  runApp(app)
+}
