@@ -1,10 +1,10 @@
 # =============================================================================
-# Project 2: Data Explorer — R Shiny Web Application
+# Project 3: Data Explorer — A/B Testing Experiment
 # =============================================================================
-# Student 1: App Skeleton, Data Loading, User Guide
-# Student 2: Data Cleaning
-# Student 3: Feature Engineering + EDA summary/correlation
-# Student 4: Interactive EDA + Grouped summaries + Downloads + Polish
+# Member 1: Application Development and Experiment Implementation
+# Member 2: Research Design and Hypothesis Formulation
+# Member 3: Data Collection and Tracking
+# Member 4: Statistical Analysis and Reporting
 # =============================================================================
 
 # ---- Packages ----------------------------------------------------------------
@@ -58,103 +58,103 @@ read_txt_content <- function(file_path) {
 # ---- ADDED: helper functions (Student 2 Part) --------------------------------------
 standardize_text_column <- function(x, trim_ws = TRUE, to_lower = FALSE, blank_to_na = TRUE) {
   if (!is.character(x)) return(x)
-  
+
   y <- x
-  
+
   if (trim_ws) {
     y <- trimws(y)
   }
-  
+
   if (blank_to_na) {
     normalized <- tolower(trimws(y))
     na_like_tokens <- c("", "na", "n/a", "null", "none", "missing", "unknown")
     y[normalized %in% na_like_tokens] <- NA_character_
   }
-  
+
   if (to_lower) {
     y <- tolower(y)
   }
-  
+
   y
 }
 
 canonicalize_common_labels <- function(x, use_lowercase = FALSE) {
   if (!is.character(x)) return(x)
-  
+
   y <- trimws(x)
   y_lower <- tolower(y)
-  
+
   male_label <- if (use_lowercase) "male" else "Male"
   female_label <- if (use_lowercase) "female" else "Female"
   yes_label <- if (use_lowercase) "yes" else "Yes"
   no_label <- if (use_lowercase) "no" else "No"
   active_label <- if (use_lowercase) "active" else "Active"
   inactive_label <- if (use_lowercase) "inactive" else "Inactive"
-  
+
   y[y_lower %in% c("male", "m")] <- male_label
   y[y_lower %in% c("female", "f")] <- female_label
   y[y_lower %in% c("yes", "y", "true", "t")] <- yes_label
   y[y_lower %in% c("no", "n", "false")] <- no_label
   y[y_lower %in% c("active", "act")] <- active_label
   y[y_lower %in% c("inactive", "inact")] <- inactive_label
-  
+
   y
 }
 
 try_parse_numeric_column <- function(x) {
   if (!is.character(x)) return(x)
-  
+
   y <- trimws(x)
   non_missing <- !is.na(y) & y != ""
   if (!any(non_missing)) return(x)
-  
+
   cleaned <- gsub(",", "", y)
   cleaned <- gsub("\\$", "", cleaned)
   cleaned <- gsub("USD", "", cleaned, ignore.case = TRUE)
   cleaned <- gsub("%", "", cleaned)
   cleaned <- trimws(cleaned)
-  
+
   parsed <- suppressWarnings(as.numeric(cleaned))
   success_rate <- mean(!is.na(parsed[non_missing]))
   digit_ratio <- mean(grepl("[0-9]", y[non_missing]))
-  
+
   if (!is.na(success_rate) && !is.na(digit_ratio) && success_rate >= 0.8 && digit_ratio >= 0.8) {
     return(parsed)
   }
-  
+
   x
 }
 
 try_standardize_date_column <- function(x) {
   if (!is.character(x)) return(x)
-  
+
   y <- trimws(x)
   non_missing <- !is.na(y) & y != ""
   if (!any(non_missing)) return(x)
-  
+
   formats <- c(
     "%Y-%m-%d", "%Y/%m/%d",
     "%m/%d/%Y", "%d/%m/%Y",
     "%m-%d-%Y", "%d-%m-%Y"
   )
-  
+
   best_parsed <- NULL
   best_success_rate <- 0
-  
+
   for (fmt in formats) {
     parsed <- as.Date(y, format = fmt)
     success_rate <- mean(!is.na(parsed[non_missing]))
-    
+
     if (!is.na(success_rate) && success_rate > best_success_rate) {
       best_success_rate <- success_rate
       best_parsed <- parsed
     }
   }
-  
+
   if (!is.null(best_parsed) && best_success_rate >= 0.8) {
     return(best_parsed)
   }
-  
+
   x
 }
 
@@ -437,10 +437,11 @@ body {
 # =============================================================================
 ui <- navbarPage(
   title = span(icon("chart-line"), " Data Explorer"),
+  id = "main_navbar",
   theme = bs_theme(version = 5, bootswatch = "flatly"),
   useShinyjs(),
   header = tags$head(tags$style(HTML(custom_css))),
-  
+
   tabPanel(
     "User Guide",
     icon = icon("book"),
@@ -544,10 +545,10 @@ ui <- navbarPage(
           )
         )
       ),
-      div(class = "app-footer", "Data Explorer — Applied Data Science, Spring 2026")
+      div(class = "app-footer", "Project 3: Data Explorer — A/B Testing Experiment, Spring 2026")
     )
   ),
-  
+
   tabPanel(
     "Data Loading",
     icon = icon("upload"),
@@ -566,7 +567,7 @@ ui <- navbarPage(
                    div(class = "section-divider", "OR"),
                    h4(icon("database"), " Demo Dataset"),
                    selectInput("demo_data", NULL, choices = demo_choices),
-                   actionButton("load_demo", "Load Demo Dataset", class = "btn-primary w-100", icon = icon("play")),
+                   uiOutput("ab_demo_button_ui"),
                    uiOutput("data_summary_panel")
                )
         ),
@@ -577,13 +578,23 @@ ui <- navbarPage(
                    DTOutput("data_preview")
                ),
                br(),
+               div(class = "preview-card",
+                   h5(icon("flask"), " A/B Testing Session Info"),
+                   p("This experiment changes only one interface variable: the demo CTA button text. All other app behavior remains identical across groups."),
+                   htmlOutput("ab_session_info"),
+                   br(),
+                   downloadButton("download_ab_metrics", "Download A/B Metrics", class = "btn-primary"),
+                   br(), br(),
+                   tags$small("Tip: append ?group=A or ?group=B to the app URL to force a control or treatment version during testing.")
+               ),
+               br(),
                uiOutput("text_editor_ui")
         )
       ),
-      div(class = "app-footer", "Data Explorer — Applied Data Science, Spring 2026")
+      div(class = "app-footer", "Project 3: Data Explorer — A/B Testing Experiment, Spring 2026")
     )
   ),
-  
+
   tabPanel(
     "Data Cleaning",
     icon = icon("broom"),
@@ -625,7 +636,7 @@ ui <- navbarPage(
       )
     )
   ),
-  
+
   tabPanel(
     "Feature Engineering",
     icon = icon("wrench"),
@@ -696,7 +707,7 @@ ui <- navbarPage(
       )
     )
   ),
-  
+
   tabPanel(
     "EDA",
     icon = icon("chart-bar"),
@@ -802,7 +813,7 @@ ui <- navbarPage(
           )
         )
       ),
-      div(class = "app-footer", "Data Explorer — Applied Data Science, Spring 2026")
+      div(class = "app-footer", "Project 3: Data Explorer — A/B Testing Experiment, Spring 2026")
     )
   )
 )
@@ -814,11 +825,32 @@ server <- function(input, output, session) {
   current_text <- reactiveVal(NULL)
   current_text_name <- reactiveVal(NULL)
 
-  
+  # ---- A/B testing: session-level assignment for demo CTA --------------------
+  query_params <- parseQueryString(session$clientData$url_search %||% "")
+  requested_group <- toupper(trimws(query_params[["group"]] %||% ""))
+  assigned_group <- if (requested_group %in% c("A", "B")) requested_group else sample(c("A", "B"), size = 1)
+  assignment_method <- if (requested_group %in% c("A", "B")) "URL parameter" else "Random session assignment"
+  session_start_time <- Sys.time()
+  session_id <- paste0("session_", format(session_start_time, "%Y%m%d%H%M%S"), "_", sample(1000:9999, 1))
+  first_action_logged <- reactiveVal(FALSE)
+  ab_condition <- reactiveVal(assigned_group)
+  ab_metrics <- reactiveVal(data.frame(
+    session_id = character(),
+    event = character(),
+    condition = character(),
+    button_text = character(),
+    dataset = character(),
+    tab = character(),
+    seconds_from_start = numeric(),
+    timestamp = character(),
+    stringsAsFactors = FALSE
+  ))
+
+
   # ---- Shared reactive dataset ------------------------------------------------
   current_data <- reactiveVal(NULL)
   data_name <- reactiveVal(NULL)
-  
+
   # ---- ADDED: helper functions (Student 4 Part) -------------------------------------
   keep_or_default <- function(current, choices, default_index = 1) {
     current <- normalize_input_vector(current)
@@ -833,11 +865,11 @@ server <- function(input, output, session) {
     }
     character(0)
   }
-  
+
   plot_formula <- function(var_name) {
     as.formula(paste0("~`", var_name, "`"))
   }
-  
+
   normalize_input_vector <- function(x) {
     if (is.null(x)) {
       return(character(0))
@@ -847,7 +879,7 @@ server <- function(input, output, session) {
     }
     as.character(x)
   }
-  
+
   get_numeric_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -855,7 +887,7 @@ server <- function(input, output, session) {
     flags <- vapply(df, is.numeric, logical(1))
     names(df)[flags]
   }
-  
+
   get_categorical_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -863,7 +895,7 @@ server <- function(input, output, session) {
     flags <- vapply(df, function(x) is.character(x) || is.factor(x), logical(1))
     names(df)[flags]
   }
-  
+
   get_date_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -872,10 +904,63 @@ server <- function(input, output, session) {
     names(df)[flags]
   }
 
+  output$ab_demo_button_ui <- renderUI({
+    button_label <- if (identical(ab_condition(), "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+
+    actionButton(
+      "load_demo",
+      button_label,
+      class = "btn-primary w-100",
+      icon = icon("play")
+    )
+  })
+
+  log_ab_event <- function(event_name, dataset_name = "NA", tab_name = "NA") {
+    condition_label <- if (identical(ab_condition(), "A")) "Control A" else "Treatment B"
+    button_label <- if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly"
+    elapsed_seconds <- round(as.numeric(difftime(Sys.time(), session_start_time, units = "secs")), 3)
+    new_row <- data.frame(
+      session_id = session_id,
+      event = event_name,
+      condition = condition_label,
+      button_text = button_label,
+      dataset = dataset_name,
+      tab = tab_name,
+      seconds_from_start = elapsed_seconds,
+      timestamp = as.character(Sys.time()),
+      stringsAsFactors = FALSE
+    )
+    ab_metrics(rbind(ab_metrics(), new_row))
+    message(paste0(
+      "A/B event logged | session: ", session_id,
+      " | event: ", event_name,
+      " | condition: ", condition_label,
+      " | button_text: ", button_label,
+      " | dataset: ", dataset_name,
+      " | tab: ", tab_name,
+      " | seconds_from_start: ", elapsed_seconds,
+      " | timestamp: ", new_row$timestamp
+    ))
+  }
+
+  observeEvent(TRUE, {
+    log_ab_event("session_started", dataset_name = "NA", tab_name = input$main_navbar %||% "User Guide")
+    log_ab_event("demo_cta_impression", dataset_name = input$demo_data %||% "none", tab_name = "Data Loading")
+  }, once = TRUE, ignoreInit = FALSE)
+
+  observeEvent(input$main_navbar, {
+    req(input$main_navbar)
+    log_ab_event("tab_viewed", dataset_name = data_name() %||% "NA", tab_name = input$main_navbar)
+  }, ignoreInit = TRUE)
+
   # ---- Data loading: file upload ---------------------------------------------
   observeEvent(input$file_upload, {
     req(input$file_upload)
-    
+
     tryCatch({
       ext <- tolower(file_ext(input$file_upload$name))
 
@@ -895,6 +980,11 @@ server <- function(input, output, session) {
           paste0("Successfully loaded text file '", input$file_upload$name, "' for editing."),
           type = "message", duration = 5
         )
+        if (!first_action_logged()) {
+          log_ab_event("first_action_completed", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+          first_action_logged(TRUE)
+        }
+        log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
       } else {
         df <- read_uploaded_file(
           input$file_upload$datapath,
@@ -911,6 +1001,11 @@ server <- function(input, output, session) {
                  "' (", nrow(df), " rows, ", ncol(df), " columns)"),
           type = "message", duration = 5
         )
+        if (!first_action_logged()) {
+          log_ab_event("first_action_completed", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+          first_action_logged(TRUE)
+        }
+        log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
       }
     }, error = function(e) {
       current_data(NULL)
@@ -938,28 +1033,42 @@ server <- function(input, output, session) {
       ))
     }
   }, ignoreInit = TRUE)
-  
+
   # ---- Data loading: demo dataset --------------------------------------------
   observeEvent(input$load_demo, {
     req(input$demo_data != "none")
-    
+
     df <- switch(input$demo_data,
                  "mtcars" = mtcars,
                  "iris" = iris)
-    
+
     if (!is.null(df)) {
       current_text(NULL)
       current_text_name(NULL)
       current_data(df)
       data_name(input$demo_data)
+
+      condition_label <- if (identical(ab_condition(), "A")) {
+        "Control A"
+      } else {
+        "Treatment B"
+      }
+
       showNotification(
         paste0("Loaded demo dataset '", input$demo_data,
-               "' (", nrow(df), " rows, ", ncol(df), " columns)"),
+               "' (", nrow(df), " rows, ", ncol(df), " columns) via ", condition_label, "."),
         type = "message", duration = 5
       )
+
+      if (!first_action_logged()) {
+        log_ab_event("first_action_completed", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
+        first_action_logged(TRUE)
+      }
+      log_ab_event("demo_button_clicked", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
+      log_ab_event("demo_dataset_loaded", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
     }
   })
-  
+
   # ---- Status banner ----------------------------------------------------------
   output$load_status <- renderUI({
     if (!is.null(current_text_name())) {
@@ -984,7 +1093,7 @@ server <- function(input, output, session) {
       )
     }
   })
-  
+
   # ---- Summary panel ----------------------------------------------------------
   output$data_summary_panel <- renderUI({
     req(current_data())
@@ -1009,12 +1118,12 @@ server <- function(input, output, session) {
         )
       ))
     }
-    
+
     num_cols <- sum(sapply(df, is.numeric))
     char_cols <- sum(sapply(df, is.character))
     factor_cols <- sum(sapply(df, is.factor))
     missing <- sum(is.na(df))
-    
+
     tagList(
       hr(),
       h4(icon("chart-pie"), " Summary"),
@@ -1037,7 +1146,7 @@ server <- function(input, output, session) {
       )
     )
   })
-  
+
   # ---- Data preview -----------------------------------------------------------
   output$data_preview <- renderDT({
     req(current_data())
@@ -1057,7 +1166,28 @@ server <- function(input, output, session) {
       filter = "top"
     )
   })
-  
+
+
+  output$ab_session_info <- renderUI({
+    condition_label <- if (identical(ab_condition(), "A")) "Control A" else "Treatment B"
+    button_label <- if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly"
+    metrics_df <- ab_metrics()
+    event_count <- nrow(metrics_df)
+    first_action_time <- if (any(metrics_df$event == "first_action_completed")) {
+      metrics_df$seconds_from_start[match("first_action_completed", metrics_df$event)]
+    } else {
+      NA_real_
+    }
+
+    HTML(paste0(
+      "<p><strong>Session ID:</strong> ", session_id, "</p>",
+      "<p><strong>Assigned condition:</strong> ", condition_label, "</p>",
+      "<p><strong>Assignment method:</strong> ", assignment_method, "</p>",
+      "<p><strong>Button text shown:</strong> ", button_label, "</p>",
+      "<p><strong>Events logged this session:</strong> ", event_count, "</p>",
+      "<p><strong>Time to first action (seconds):</strong> ", ifelse(is.na(first_action_time), "Not yet recorded", first_action_time), "</p>"
+    ))
+  })
 
   output$text_editor_ui <- renderUI({
     req(current_text_name())
@@ -1086,6 +1216,15 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       writeLines(current_text() %||% "", con = file, useBytes = TRUE)
+    }
+  )
+
+  output$download_ab_metrics <- downloadHandler(
+    filename = function() {
+      paste0("ab_metrics_", Sys.Date(), ".csv")
+    },
+    content = function(file) {
+      utils::write.csv(ab_metrics(), file, row.names = FALSE)
     }
   )
 
