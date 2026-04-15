@@ -55,6 +55,26 @@ read_txt_content <- function(file_path) {
   paste(readLines(file_path, warn = FALSE, encoding = "UTF-8"), collapse = "\n")
 }
 
+# ---- Helper: Get app base directory (for robust log file path) ----
+get_app_base_dir <- function() {
+  cmd_args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", cmd_args, value = TRUE)
+  if (length(file_arg) > 0) {
+    script_path <- sub("^--file=", "", file_arg[1])
+    return(dirname(normalizePath(script_path, winslash = "/", mustWork = FALSE)))
+  }
+
+  frame_files <- vapply(sys.frames(), function(x) {
+    if (!is.null(x$ofile)) x$ofile else NA_character_
+  }, character(1))
+  frame_files <- frame_files[!is.na(frame_files)]
+  if (length(frame_files) > 0) {
+    return(dirname(normalizePath(frame_files[length(frame_files)], winslash = "/", mustWork = FALSE)))
+  }
+
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
 # ---- ADDED: helper functions (Student 2 Part) --------------------------------------
 standardize_text_column <- function(x, trim_ws = TRUE, to_lower = FALSE, blank_to_na = TRUE) {
   if (!is.character(x)) return(x)
@@ -847,6 +867,8 @@ server <- function(input, output, session) {
   first_action_logged <- reactiveVal(FALSE)
   ab_condition <- reactiveVal(sample(c("A", "B"), size = 1))
   assignment_method <- reactiveVal("Random session assignment")
+  ab_log_dir <- file.path(get_app_base_dir(), "logs")
+  ab_log_file <- file.path(ab_log_dir, "ab_metrics_log.csv")
   ab_metrics <- reactiveVal(data.frame(
     session_id = character(),
     event = character(),
@@ -960,6 +982,28 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
     ab_metrics(rbind(ab_metrics(), new_row))
+
+    tryCatch({
+      if (!dir.exists(ab_log_dir)) {
+        dir.create(ab_log_dir, recursive = TRUE, showWarnings = FALSE)
+      }
+
+      if (!file.exists(ab_log_file)) {
+        utils::write.csv(new_row, ab_log_file, row.names = FALSE)
+      } else {
+        utils::write.table(
+          new_row,
+          ab_log_file,
+          sep = ",",
+          row.names = FALSE,
+          col.names = FALSE,
+          append = TRUE
+        )
+      }
+    }, error = function(e) {
+      message(paste0("A/B log persistence warning: ", e$message))
+    })
+
     message(paste0(
       "A/B event logged | session: ", session_id,
       " | event: ", event_name,
@@ -1249,7 +1293,14 @@ server <- function(input, output, session) {
       paste0("ab_metrics_", Sys.Date(), ".csv")
     },
     content = function(file) {
-      utils::write.csv(ab_metrics(), file, row.names = FALSE)
+      if (file.exists(ab_log_file)) {
+        ok <- file.copy(ab_log_file, file, overwrite = TRUE)
+        if (!isTRUE(ok)) {
+          utils::write.csv(ab_metrics(), file, row.names = FALSE)
+        }
+      } else {
+        utils::write.csv(ab_metrics(), file, row.names = FALSE)
+      }
     }
   )
 
