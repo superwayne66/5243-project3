@@ -2626,6 +2626,3 @@ server <- function(input, output, session) {
 
 app <- shinyApp(ui = ui, server = server)
 
-if (interactive()) {
-  runApp(app)
-}
