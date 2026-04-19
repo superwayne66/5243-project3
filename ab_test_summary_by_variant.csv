@@ -1,0 +1,3 @@
+variant,condition,button_text,sessions,demo_clicks,demo_loaded,first_actions,downstream_actions,errors,avg_time_to_first_action,ctr,demo_load_rate,first_action_rate,downstream_engagement_rate,error_rate
+A,Control A,Load Demo Dataset,20,5,5,8,0,0,3.98875,0.25,0.25,0.4,0.0,0.0
+B,Treatment B,Try Demo Dataset Instantly,24,21,21,22,1,0,5.010909090909091,0.875,0.875,0.9166666666666666,0.041666666666666664,0.0

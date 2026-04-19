@@ -1,0 +1,45 @@
+session_id,variant,condition,button_text,saw_demo_cta,clicked_demo_button,demo_load_failed,loaded_demo_dataset,completed_first_action,applied_cleaning,applied_feature_engineering,had_error,time_to_first_action,downstream_engagement
+session_20260419210247_9738,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,12.018,False
+session_20260419210319_6253,A,Control A,Load Demo Dataset,True,False,False,False,True,False,False,False,7.984,False
+session_20260419210333_3969,A,Control A,Load Demo Dataset,True,False,False,False,True,False,False,False,4.066,False
+session_20260419210342_9848,B,Treatment B,Try Demo Dataset Instantly,True,False,False,False,False,False,False,False,,False
+session_20260419210344_2406,A,Control A,Load Demo Dataset,True,True,False,True,True,False,False,False,2.342,False
+session_20260419210350_4988,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.823,False
+session_20260419210406_5748,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.412,False
+session_20260419210417_1064,B,Treatment B,Try Demo Dataset Instantly,True,False,False,False,True,False,False,False,7.012,False
+session_20260419210510_8017,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419210515_4926,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,True,False,15.981,True
+session_20260419210605_8252,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.877,False
+session_20260419210626_8108,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.708,False
+session_20260419210655_7256,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.551,False
+session_20260419210702_7977,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419210708_2515,A,Control A,Load Demo Dataset,True,False,False,False,True,False,False,False,5.764,False
+session_20260419210719_7213,B,Treatment B,Try Demo Dataset Instantly,True,True,True,True,True,False,False,False,6.615,False
+session_20260419210736_8621,A,Control A,Load Demo Dataset,True,True,False,True,True,False,False,False,3.238,False
+session_20260419210846_6353,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.293,False
+session_20260419210900_1025,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,4.119,False
+session_20260419210909_9235,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419210915_8808,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,5.255,False
+session_20260419210929_3694,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419210933_7723,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.766,False
+session_20260419210942_3704,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.158,False
+session_20260419210959_3769,B,Treatment B,Try Demo Dataset Instantly,True,True,True,True,True,False,False,False,3.981,False
+session_20260419211009_2758,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211013_9309,A,Control A,Load Demo Dataset,True,True,False,True,True,False,False,False,2.82,False
+session_20260419211020_5279,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211026_4913,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211031_4080,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.63,False
+session_20260419211039_6514,A,Control A,Load Demo Dataset,True,True,False,True,True,False,False,False,3.223,False
+session_20260419211045_8030,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211049_6289,A,Control A,Load Demo Dataset,True,True,False,True,True,False,False,False,2.473,False
+session_20260419211059_2006,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211108_8078,B,Treatment B,Try Demo Dataset Instantly,True,True,True,True,True,False,False,False,3.64,False
+session_20260419211115_4716,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.582,False
+session_20260419211123_3408,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,3.092,False
+session_20260419211129_8056,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211134_2401,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211140_8113,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,2.786,False
+session_20260419211150_4054,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,10.553,False
+session_20260419211214_5785,A,Control A,Load Demo Dataset,True,False,False,False,False,False,False,False,,False
+session_20260419211222_1319,B,Treatment B,Try Demo Dataset Instantly,True,True,False,True,True,False,False,False,4.388,False
+session_20260419211247_8580,B,Treatment B,Try Demo Dataset Instantly,True,False,False,False,False,False,False,False,,False
