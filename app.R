@@ -26,7 +26,7 @@ DD_SERVICE <- trimws(Sys.getenv("DD_SERVICE", unset = "data-explorer-shiny"))
 DD_ENV <- trimws(Sys.getenv("DD_ENV", unset = "development"))
 DD_VERSION <- trimws(Sys.getenv("DD_VERSION", unset = "1.0.0"))
 DD_ENABLED <- nzchar(DD_APPLICATION_ID) && nzchar(DD_CLIENT_TOKEN)
-GA_ID <- Sys.getenv("GA_MEASUREMENT_ID", unset = "G-9S3DXXD385")
+GA_ID <- Sys.getenv("GA_MEASUREMENT_ID", unset = "G-3L7WXSWEK7")
 GA_ENABLED <- nzchar(trimws(GA_ID))
 POSTHOG_API_KEY <- trimws(Sys.getenv("POSTHOG_API_KEY", unset = ""))
 POSTHOG_HOST <- trimws(Sys.getenv("POSTHOG_HOST", unset = "https://us.i.posthog.com"))
@@ -533,14 +533,71 @@ ui <- tagList(
     toJSON(DD_ENV, auto_unbox = TRUE),
     toJSON(DD_VERSION, auto_unbox = TRUE),
     if (DD_ENABLED) "true" else "false"))),
+    # ---- Google Analytics 4 ----------------------------------------------------
     if (GA_ENABLED) {
-      tags$script(async = NA, src = paste0("https://www.googletagmanager.com/gtag/js?id=", GA_ID))
+      tags$script(
+        async = NA,
+        src = paste0("https://www.googletagmanager.com/gtag/js?id=", GA_ID)
+      )
     },
-    tags$script(HTML(sprintf("\n      window.dataLayer = window.dataLayer || [];\n      function gtag(){dataLayer.push(arguments);}\n\n      if (%s) {\n        gtag('js', new Date());\n        gtag('config', '%s', { send_page_view: true, debug_mode: true });\n      }\n\n      window.trackGAEvent = function(eventName, params) {\n        if (%s && typeof gtag === 'function') {\n          gtag('event', eventName, params || {});\n        }\n      };\n\n      document.addEventListener('shiny:connected', function() {\n        if (window.Shiny) {\n          Shiny.addCustomMessageHandler('ga_event', function(message) {\n            if (%s && typeof gtag === 'function') {\n              gtag('event', message.event_name, message.params || {});\n            }\n          });\n        }\n      }, { once: true });\n    ",
-    if (GA_ENABLED) "true" else "false",
-    if (GA_ENABLED) GA_ID else "",
-    if (GA_ENABLED) "true" else "false",
-    if (GA_ENABLED) "true" else "false"))),
+    
+    tags$script(HTML(sprintf("
+  // ---- Google Analytics 4 setup ----
+  window.dataLayer = window.dataLayer || [];
+
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+
+  window.gtag = gtag;
+
+  if (%s) {
+    window.gtag('js', new Date());
+    window.gtag('config', '%s', {
+      send_page_view: true,
+      debug_mode: true
+    });
+  }
+
+  window.trackGAEvent = function(eventName, params) {
+    if (%s && typeof window.gtag === 'function') {
+      window.gtag('event', eventName, params || {});
+      console.log('[GA4 manual event sent]', eventName, params || {});
+    } else {
+      console.warn('[GA4 manual event NOT sent]', eventName, params || {});
+    }
+  };
+
+  // ---- Shiny -> GA4 custom event handler ----
+  function registerGAHandler() {
+    if (!window.Shiny || typeof window.Shiny.addCustomMessageHandler !== 'function') {
+      return;
+    }
+
+    if (window.__gaEventHandlerRegistered) {
+      return;
+    }
+
+    window.__gaEventHandlerRegistered = true;
+
+    window.Shiny.addCustomMessageHandler('ga_event', function(message) {
+      if (%s && typeof window.gtag === 'function') {
+        window.gtag('event', message.event_name, message.params || {});
+        console.log('[GA4 event sent]', message.event_name, message.params || {});
+      } else {
+        console.warn('[GA4 event NOT sent]', message);
+      }
+    });
+  }
+
+  registerGAHandler();
+  document.addEventListener('shiny:connected', registerGAHandler);
+",
+                             if (GA_ENABLED) "true" else "false",
+                             GA_ID,
+                             if (GA_ENABLED) "true" else "false",
+                             if (GA_ENABLED) "true" else "false"
+    ))),
     tags$script(HTML(sprintf("
       (function(apiKey, apiHost, enabled) {
         window.trackPostHogEvent = function(eventName, properties) {
@@ -989,18 +1046,32 @@ ui <- tagList(
 server <- function(input, output, session) {
   current_text <- reactiveVal(NULL)
   current_text_name <- reactiveVal(NULL)
-
+  
   # ---- A/B testing: session-level assignment for demo CTA --------------------
   session_start_time <- Sys.time()
-  session_id <- paste0("session_", format(session_start_time, "%Y%m%d%H%M%S"), "_", sample(1000:9999, 1))
+  session_id <- paste0(
+    "session_",
+    format(session_start_time, "%Y%m%d%H%M%S"),
+    "_",
+    sample(1000:9999, 1)
+  )
+  
   first_action_logged <- reactiveVal(FALSE)
+  cleaning_action_logged <- reactiveVal(FALSE)
+  demo_cta_impression_logged <- reactiveVal(FALSE)
+  feature_engineering_action_logged <- reactiveVal(FALSE)
+  interactive_eda_plot_logged <- reactiveVal(FALSE)
+  
   ab_condition <- reactiveVal(sample(c("A", "B"), size = 1))
   assignment_method <- reactiveVal("Random session assignment")
+  
   ab_log_dir <- file.path(get_app_base_dir(), "logs")
   ab_log_file <- file.path(ab_log_dir, "ab_metrics_log.csv")
+  
   ab_metrics <- reactiveVal(data.frame(
     session_id = character(),
     event = character(),
+    variant = character(),
     condition = character(),
     button_text = character(),
     dataset = character(),
@@ -1009,11 +1080,11 @@ server <- function(input, output, session) {
     timestamp = character(),
     stringsAsFactors = FALSE
   ))
-
+  
   observeEvent(session$clientData$url_search, {
     query_params <- parseQueryString(session$clientData$url_search %||% "")
     requested_group <- toupper(trimws(query_params[["group"]] %||% ""))
-
+    
     if (requested_group %in% c("A", "B")) {
       ab_condition(requested_group)
       assignment_method("URL parameter")
@@ -1021,12 +1092,13 @@ server <- function(input, output, session) {
       assignment_method("Random session assignment")
     }
   }, once = TRUE, ignoreInit = FALSE)
-
-
+  
+  
   # ---- Shared reactive dataset ------------------------------------------------
   current_data <- reactiveVal(NULL)
   data_name <- reactiveVal(NULL)
-
+  
+  
   # ---- ADDED: helper functions (Student 4 Part) -------------------------------------
   keep_or_default <- function(current, choices, default_index = 1) {
     current <- normalize_input_vector(current)
@@ -1041,11 +1113,11 @@ server <- function(input, output, session) {
     }
     character(0)
   }
-
+  
   plot_formula <- function(var_name) {
     as.formula(paste0("~`", var_name, "`"))
   }
-
+  
   normalize_input_vector <- function(x) {
     if (is.null(x)) {
       return(character(0))
@@ -1055,7 +1127,7 @@ server <- function(input, output, session) {
     }
     as.character(x)
   }
-
+  
   get_numeric_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -1063,7 +1135,7 @@ server <- function(input, output, session) {
     flags <- vapply(df, is.numeric, logical(1))
     names(df)[flags]
   }
-
+  
   get_categorical_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -1071,7 +1143,7 @@ server <- function(input, output, session) {
     flags <- vapply(df, function(x) is.character(x) || is.factor(x), logical(1))
     names(df)[flags]
   }
-
+  
   get_date_cols <- function(df) {
     if (is.null(df) || ncol(df) == 0) {
       return(character(0))
@@ -1079,14 +1151,16 @@ server <- function(input, output, session) {
     flags <- vapply(df, inherits, logical(1), what = "Date")
     names(df)[flags]
   }
-
+  
+  
+  # ---- A/B demo button UI -----------------------------------------------------
   output$ab_demo_button_ui <- renderUI({
     button_label <- if (identical(ab_condition(), "A")) {
       "Load Demo Dataset"
     } else {
       "Try Demo Dataset Instantly"
     }
-
+    
     actionButton(
       "load_demo",
       button_label,
@@ -1094,12 +1168,14 @@ server <- function(input, output, session) {
       icon = icon("play")
     )
   })
-
+  
+  
+  # ---- Analytics helper functions -------------------------------------------
   track_datadog_action <- function(action_name, context = list()) {
     if (!isTRUE(DD_ENABLED)) {
       return(invisible(NULL))
     }
-
+    
     normalized_context <- lapply(context, function(x) {
       if (is.null(x) || length(x) == 0) {
         return(NA_character_)
@@ -1115,7 +1191,7 @@ server <- function(input, output, session) {
       }
       as.character(x)[1]
     })
-
+    
     session$sendCustomMessage(
       type = "datadog_action",
       message = list(
@@ -1123,15 +1199,16 @@ server <- function(input, output, session) {
         context = normalized_context
       )
     )
-
+    
     invisible(NULL)
   }
-
+  
+  
   track_ga_event <- function(event_name, params = list()) {
     if (!isTRUE(GA_ENABLED)) {
       return(invisible(NULL))
     }
-
+    
     normalized_params <- lapply(params, function(x) {
       if (is.null(x) || length(x) == 0) {
         return(NA_character_)
@@ -1147,9 +1224,9 @@ server <- function(input, output, session) {
       }
       as.character(x)[1]
     })
-
+    
     normalized_params$debug_mode <- TRUE
-
+    
     session$sendCustomMessage(
       type = "ga_event",
       message = list(
@@ -1157,17 +1234,18 @@ server <- function(input, output, session) {
         params = normalized_params
       )
     )
-
+    
     invisible(NULL)
   }
-
+  
+  
   track_posthog_event <- function(event_name, properties = list()) {
     track_ga_event(event_name, properties)
-
+    
     if (!isTRUE(POSTHOG_ENABLED)) {
       return(invisible(NULL))
     }
-
+    
     normalized_properties <- lapply(properties, function(x) {
       if (is.null(x) || length(x) == 0) {
         return(NA_character_)
@@ -1183,7 +1261,7 @@ server <- function(input, output, session) {
       }
       as.character(x)[1]
     })
-
+    
     session$sendCustomMessage(
       type = "posthog_capture",
       message = list(
@@ -1191,18 +1269,38 @@ server <- function(input, output, session) {
         properties = normalized_properties
       )
     )
-
+    
     invisible(NULL)
   }
-
+  
+  
+  # ---- A/B event logging ------------------------------------------------------
   log_ab_event <- function(event_name, dataset_name = "NA", tab_name = "NA") {
-    condition_label <- if (identical(ab_condition(), "A")) "Control A" else "Treatment B"
-    button_label <- if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly"
-    elapsed_seconds <- round(as.numeric(difftime(Sys.time(), session_start_time, units = "secs")), 3)
+    variant_label <- ab_condition()
+    
+    condition_label <- if (identical(variant_label, "A")) {
+      "Control A"
+    } else {
+      "Treatment B"
+    }
+    
+    button_label <- if (identical(variant_label, "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+    
+    elapsed_seconds <- round(
+      as.numeric(difftime(Sys.time(), session_start_time, units = "secs")),
+      3
+    )
+    
     event_timestamp <- as.character(Sys.time())
+    
     new_row <- data.frame(
       session_id = session_id,
       event = event_name,
+      variant = variant_label,
       condition = condition_label,
       button_text = button_label,
       dataset = dataset_name,
@@ -1211,39 +1309,36 @@ server <- function(input, output, session) {
       timestamp = event_timestamp,
       stringsAsFactors = FALSE
     )
+    
     ab_metrics(rbind(ab_metrics(), new_row))
-
+    
+    event_context <- list(
+      session_id = session_id,
+      variant = variant_label,
+      ab_condition = condition_label,
+      assignment_method = assignment_method(),
+      button_text = button_label,
+      dataset = dataset_name,
+      tab_name = tab_name,
+      seconds_from_start = elapsed_seconds,
+      timestamp = event_timestamp
+    )
+    
     track_datadog_action(
       event_name,
-      list(
-        session_id = session_id,
-        ab_condition = condition_label,
-        button_text = button_label,
-        dataset = dataset_name,
-        tab_name = tab_name,
-        seconds_from_start = elapsed_seconds,
-        timestamp = event_timestamp
-      )
+      event_context
     )
-
+    
     track_posthog_event(
       event_name,
-      list(
-        session_id = session_id,
-        ab_condition = condition_label,
-        button_text = button_label,
-        dataset = dataset_name,
-        tab_name = tab_name,
-        seconds_from_start = elapsed_seconds,
-        timestamp = event_timestamp
-      )
+      event_context
     )
-
+    
     tryCatch({
       if (!dir.exists(ab_log_dir)) {
         dir.create(ab_log_dir, recursive = TRUE, showWarnings = FALSE)
       }
-
+      
       if (!file.exists(ab_log_file)) {
         utils::write.csv(new_row, ab_log_file, row.names = FALSE)
       } else {
@@ -1259,10 +1354,11 @@ server <- function(input, output, session) {
     }, error = function(e) {
       message(paste0("A/B log persistence warning: ", e$message))
     })
-
+    
     message(paste0(
       "A/B event logged | session: ", session_id,
       " | event: ", event_name,
+      " | variant: ", variant_label,
       " | condition: ", condition_label,
       " | button_text: ", button_label,
       " | dataset: ", dataset_name,
@@ -1271,147 +1367,296 @@ server <- function(input, output, session) {
       " | timestamp: ", event_timestamp
     ))
   }
-
+  
+  
+  # ---- Page view and session start tracking ----------------------------------
   page_view_logged <- reactiveVal(FALSE)
-
+  
   observe({
     req(!page_view_logged())
-
+    
     page_location <- session$clientData$url_href %||% ""
     page_path <- session$clientData$url_pathname %||% ""
     current_tab <- input$main_navbar %||% "User Guide"
-    current_demo <- input$demo_data %||% "none"
-
+    
     page_view_logged(TRUE)
-
+    
     isolate({
       track_posthog_event(
         "page_view",
         list(
           page_title = "Data Explorer",
           page_location = page_location,
-          page_path = page_path
+          page_path = page_path,
+          session_id = session_id,
+          variant = ab_condition(),
+          ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+          assignment_method = assignment_method()
         )
       )
-      log_ab_event("session_started", dataset_name = "NA", tab_name = current_tab)
-      log_ab_event("demo_cta_impression", dataset_name = current_demo, tab_name = "Data Loading")
+      
+      log_ab_event(
+        "session_started",
+        dataset_name = "NA",
+        tab_name = current_tab
+      )
     })
   })
-
+  
+  
+  # ---- Tab tracking and CTA impression tracking ------------------------------
   observeEvent(input$main_navbar, {
     req(input$main_navbar)
-    log_ab_event("tab_viewed", dataset_name = data_name() %||% "NA", tab_name = input$main_navbar)
+    
+    log_ab_event(
+      "tab_viewed",
+      dataset_name = data_name() %||% "NA",
+      tab_name = input$main_navbar
+    )
+    
+    if (
+      identical(input$main_navbar, "Data Loading") &&
+      !isTRUE(demo_cta_impression_logged())
+    ) {
+      log_ab_event(
+        "demo_cta_impression",
+        dataset_name = input$demo_data %||% "none",
+        tab_name = "Data Loading"
+      )
+      
+      demo_cta_impression_logged(TRUE)
+    }
   }, ignoreInit = TRUE)
 
   # ---- Data loading: file upload ---------------------------------------------
   observeEvent(input$file_upload, {
     req(input$file_upload)
-
+    
+    uploaded_name <- input$file_upload$name
+    uploaded_path <- input$file_upload$datapath
+    current_tab <- input$main_navbar %||% "Data Loading"
+    ext <- tolower(file_ext(uploaded_name))
+    
     tryCatch({
-      ext <- tolower(file_ext(input$file_upload$name))
-
+      
       if (ext == "txt") {
-        txt_content <- read_txt_content(input$file_upload$datapath)
-        txt_lines <- read_uploaded_file(input$file_upload$datapath, input$file_upload$name)
-
+        txt_content <- read_txt_content(uploaded_path)
+        txt_lines <- read_uploaded_file(uploaded_path, uploaded_name)
+        
         current_text(txt_content)
-        current_text_name(input$file_upload$name)
+        current_text_name(uploaded_name)
         current_data(txt_lines)
-        data_name(input$file_upload$name)
-
+        data_name(uploaded_name)
+        
         updateTextAreaInput(session, "txt_editor", value = txt_content)
         updateSelectInput(session, "demo_data", selected = "none")
-
+        
         showNotification(
-          paste0("Successfully loaded text file '", input$file_upload$name, "' for editing."),
-          type = "message", duration = 5
+          paste0("Successfully loaded text file '", uploaded_name, "' for editing."),
+          type = "message",
+          duration = 5
         )
+        
+        # First meaningful action in the session
         if (!first_action_logged()) {
-          log_ab_event("first_action_completed", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+          log_ab_event(
+            "first_action_completed",
+            dataset_name = uploaded_name,
+            tab_name = current_tab
+          )
           first_action_logged(TRUE)
         }
-        log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+        
+        # File upload success event
+        log_ab_event(
+          "file_uploaded",
+          dataset_name = uploaded_name,
+          tab_name = current_tab
+        )
+        
+        # Detailed file upload event
         track_datadog_action(
           "file_upload_details",
           list(
-            file_name = input$file_upload$name,
+            session_id = session_id,
+            variant = ab_condition(),
+            ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+            file_name = uploaded_name,
             file_type = ext,
             row_count = nrow(txt_lines),
             column_count = ncol(txt_lines),
-            is_text_file = TRUE
+            is_text_file = TRUE,
+            success = TRUE,
+            tab_name = current_tab
           )
         )
+        
         track_posthog_event(
           "file_upload_details",
           list(
-            file_name = input$file_upload$name,
+            session_id = session_id,
+            variant = ab_condition(),
+            ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+            file_name = uploaded_name,
             file_type = ext,
             row_count = nrow(txt_lines),
             column_count = ncol(txt_lines),
-            is_text_file = TRUE
+            is_text_file = TRUE,
+            success = TRUE,
+            tab_name = current_tab
           )
         )
+        
       } else {
-        df <- read_uploaded_file(
-          input$file_upload$datapath,
-          input$file_upload$name
-        )
+        
+        df <- read_uploaded_file(uploaded_path, uploaded_name)
+        
         current_text(NULL)
         current_text_name(NULL)
         current_data(df)
-        data_name(input$file_upload$name)
+        data_name(uploaded_name)
+        
         updateSelectInput(session, "demo_data", selected = "none")
-
+        
         showNotification(
-          paste0("Successfully loaded '", input$file_upload$name,
-                 "' (", nrow(df), " rows, ", ncol(df), " columns)"),
-          type = "message", duration = 5
+          paste0(
+            "Successfully loaded '", uploaded_name,
+            "' (", nrow(df), " rows, ", ncol(df), " columns)"
+          ),
+          type = "message",
+          duration = 5
         )
+        
+        # First meaningful action in the session
         if (!first_action_logged()) {
-          log_ab_event("first_action_completed", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+          log_ab_event(
+            "first_action_completed",
+            dataset_name = uploaded_name,
+            tab_name = current_tab
+          )
           first_action_logged(TRUE)
         }
-        log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+        
+        # File upload success event
+        log_ab_event(
+          "file_uploaded",
+          dataset_name = uploaded_name,
+          tab_name = current_tab
+        )
+        
+        # Detailed file upload event
         track_datadog_action(
           "file_upload_details",
           list(
-            file_name = input$file_upload$name,
+            session_id = session_id,
+            variant = ab_condition(),
+            ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+            file_name = uploaded_name,
             file_type = ext,
             row_count = nrow(df),
             column_count = ncol(df),
-            is_text_file = FALSE
+            is_text_file = FALSE,
+            success = TRUE,
+            tab_name = current_tab
           )
         )
+        
         track_posthog_event(
           "file_upload_details",
           list(
-            file_name = input$file_upload$name,
+            session_id = session_id,
+            variant = ab_condition(),
+            ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+            file_name = uploaded_name,
             file_type = ext,
             row_count = nrow(df),
             column_count = ncol(df),
-            is_text_file = FALSE
+            is_text_file = FALSE,
+            success = TRUE,
+            tab_name = current_tab
           )
         )
       }
+      
     }, error = function(e) {
+      
       current_data(NULL)
       data_name(NULL)
       current_text(NULL)
       current_text_name(NULL)
+      
       showNotification(
         paste("Error reading file:", e$message),
-        type = "error", duration = 8
+        type = "error",
+        duration = 8
+      )
+      
+      # File upload failure event
+      log_ab_event(
+        "file_upload_failed",
+        dataset_name = uploaded_name %||% "NA",
+        tab_name = current_tab
+      )
+      
+      # General error event for friction analysis
+      log_ab_event(
+        "error_occurred",
+        dataset_name = uploaded_name %||% "NA",
+        tab_name = current_tab
+      )
+      
+      track_datadog_action(
+        "file_upload_details",
+        list(
+          session_id = session_id,
+          variant = ab_condition(),
+          ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+          file_name = uploaded_name %||% "NA",
+          file_type = ext %||% "NA",
+          row_count = NA,
+          column_count = NA,
+          is_text_file = if (!is.null(ext)) identical(ext, "txt") else NA,
+          success = FALSE,
+          error_message = e$message,
+          tab_name = current_tab
+        )
+      )
+      
+      track_posthog_event(
+        "file_upload_details",
+        list(
+          session_id = session_id,
+          variant = ab_condition(),
+          ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+          file_name = uploaded_name %||% "NA",
+          file_type = ext %||% "NA",
+          row_count = NA,
+          column_count = NA,
+          is_text_file = if (!is.null(ext)) identical(ext, "txt") else NA,
+          success = FALSE,
+          error_message = e$message,
+          tab_name = current_tab
+        )
       )
     })
   })
-
+  
+  
+  # ---- Text editor update -----------------------------------------------------
   observeEvent(input$txt_editor, {
     if (!is.null(current_text_name())) {
       current_text(input$txt_editor)
-      updated_lines <- strsplit(input$txt_editor %||% "", "\n", fixed = FALSE)[[1]]
+      
+      updated_lines <- strsplit(
+        input$txt_editor %||% "",
+        "\n",
+        fixed = FALSE
+      )[[1]]
+      
       if (length(updated_lines) == 1 && identical(updated_lines, "")) {
         updated_lines <- character(0)
       }
+      
       current_data(data.frame(
         line_number = seq_along(updated_lines),
         text = updated_lines,
@@ -1422,134 +1667,235 @@ server <- function(input, output, session) {
 
   # ---- Data loading: demo dataset --------------------------------------------
   observeEvent(input$load_demo, {
-    req(input$demo_data != "none")
-
-    df <- switch(input$demo_data,
-                 "mtcars" = mtcars,
-                 "iris" = iris)
-
+    selected_demo <- input$demo_data %||% "none"
+    
+    # Record the button click first, even if the user did not select a dataset.
+    # This makes the funnel complete:
+    # demo_cta_impression -> demo_button_clicked -> demo_load_failed / demo_dataset_loaded
+    log_ab_event(
+      "demo_button_clicked",
+      dataset_name = selected_demo,
+      tab_name = input$main_navbar %||% "Data Loading"
+    )
+    
+    if (selected_demo == "none") {
+      log_ab_event(
+        "demo_load_failed",
+        dataset_name = "none",
+        tab_name = input$main_navbar %||% "Data Loading"
+      )
+      
+      showNotification(
+        "Please select a demo dataset before loading.",
+        type = "warning",
+        duration = 5
+      )
+      
+      return()
+    }
+    
+    df <- switch(
+      selected_demo,
+      "mtcars" = mtcars,
+      "iris" = iris
+    )
+    
     if (!is.null(df)) {
       current_text(NULL)
       current_text_name(NULL)
       current_data(df)
-      data_name(input$demo_data)
-
-      condition_label <- if (identical(ab_condition(), "A")) {
+      data_name(selected_demo)
+      
+      variant_label <- ab_condition()
+      
+      condition_label <- if (identical(variant_label, "A")) {
         "Control A"
       } else {
         "Treatment B"
       }
-
+      
+      button_label <- if (identical(variant_label, "A")) {
+        "Load Demo Dataset"
+      } else {
+        "Try Demo Dataset Instantly"
+      }
+      
       showNotification(
-        paste0("Loaded demo dataset '", input$demo_data,
-               "' (", nrow(df), " rows, ", ncol(df), " columns) via ", condition_label, "."),
-        type = "message", duration = 5
+        paste0(
+          "Loaded demo dataset '", selected_demo,
+          "' (", nrow(df), " rows, ", ncol(df),
+          " columns) via ", condition_label, "."
+        ),
+        type = "message",
+        duration = 5
       )
-
-      if (!first_action_logged()) {
-        log_ab_event("first_action_completed", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
+      
+      # Primary metric event:
+      # This records whether the user successfully loaded a demo dataset.
+      log_ab_event(
+        "demo_dataset_loaded",
+        dataset_name = selected_demo,
+        tab_name = input$main_navbar %||% "Data Loading"
+      )
+      
+      # First meaningful action is recorded only once per session.
+      # Loading a demo dataset counts as the first meaningful action.
+      if (!isTRUE(first_action_logged())) {
+        log_ab_event(
+          "first_action_completed",
+          dataset_name = selected_demo,
+          tab_name = input$main_navbar %||% "Data Loading"
+        )
+        
         first_action_logged(TRUE)
       }
-      log_ab_event("demo_button_clicked", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
-      log_ab_event("demo_dataset_loaded", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
+      
       track_posthog_event(
         "demo_dataset_details",
         list(
-          dataset = input$demo_data,
+          session_id = session_id,
+          variant = variant_label,
+          ab_condition = condition_label,
+          button_text = button_label,
+          dataset = selected_demo,
           row_count = nrow(df),
           column_count = ncol(df),
-          ab_condition = condition_label
+          tab_name = input$main_navbar %||% "Data Loading"
         )
       )
     }
   })
-
+  
   # ---- Status banner ----------------------------------------------------------
   output$load_status <- renderUI({
     if (!is.null(current_text_name())) {
       div(
         class = "status-banner status-success",
         icon("file-lines"),
-        span(paste0("Text file loaded: ", current_text_name(), " — edit in the text area below, then download the updated .txt file."))
+        span(
+          paste0(
+            "Text file loaded: ",
+            current_text_name(),
+            " — edit in the text area below, then download the updated .txt file."
+          )
+        )
       )
     } else if (is.null(current_data())) {
       div(
         class = "status-banner status-info",
         icon("info-circle"),
-        span("No dataset loaded yet. Upload a file or select a demo dataset from the sidebar to get started.")
+        span(
+          "No dataset loaded yet. Upload a file or select a demo dataset from the sidebar to get started."
+        )
       )
     } else {
       div(
         class = "status-banner status-success",
         icon("check-circle"),
-        span(paste0("Dataset loaded: ", data_name(),
-                    " — ", nrow(current_data()), " rows, ",
-                    ncol(current_data()), " columns"))
+        span(
+          paste0(
+            "Dataset loaded: ",
+            data_name(),
+            " — ",
+            nrow(current_data()),
+            " rows, ",
+            ncol(current_data()),
+            " columns"
+          )
+        )
       )
     }
   })
-
+  
   # ---- Summary panel ----------------------------------------------------------
   output$data_summary_panel <- renderUI({
     req(current_data())
     df <- current_data()
-
+    
     if (!is.null(current_text_name())) {
       line_count <- nrow(df)
-      char_count <- nchar(current_text() %||% "", type = "chars", allowNA = FALSE, keepNA = FALSE)
-      return(tagList(
-        hr(),
-        h4(icon("chart-pie"), " Summary"),
-        div(class = "stat-grid",
-            div(class = "stat-box",
-                span(class = "stat-value", line_count),
-                span(class = "stat-label", "Lines")),
-            div(class = "stat-box",
-                span(class = "stat-value", char_count),
-                span(class = "stat-label", "Characters")),
-            div(class = "stat-box",
-                span(class = "stat-value", "TXT"),
-                span(class = "stat-label", "File Type"))
+      char_count <- nchar(
+        current_text() %||% "",
+        type = "chars",
+        allowNA = FALSE,
+        keepNA = FALSE
+      )
+      
+      return(
+        tagList(
+          hr(),
+          h4(icon("chart-pie"), " Summary"),
+          div(
+            class = "stat-grid",
+            div(
+              class = "stat-box",
+              span(class = "stat-value", line_count),
+              span(class = "stat-label", "Lines")
+            ),
+            div(
+              class = "stat-box",
+              span(class = "stat-value", char_count),
+              span(class = "stat-label", "Characters")
+            ),
+            div(
+              class = "stat-box",
+              span(class = "stat-value", "TXT"),
+              span(class = "stat-label", "File Type")
+            )
+          )
         )
-      ))
+      )
     }
-
+    
     num_cols <- sum(sapply(df, is.numeric))
     char_cols <- sum(sapply(df, is.character))
     factor_cols <- sum(sapply(df, is.factor))
     missing <- sum(is.na(df))
-
+    
     tagList(
       hr(),
       h4(icon("chart-pie"), " Summary"),
-      div(class = "stat-grid",
-          div(class = "stat-box",
-              span(class = "stat-value", nrow(df)),
-              span(class = "stat-label", "Rows")),
-          div(class = "stat-box",
-              span(class = "stat-value", ncol(df)),
-              span(class = "stat-label", "Columns")),
-          div(class = "stat-box",
-              span(class = "stat-value", num_cols),
-              span(class = "stat-label", "Numeric")),
-          div(class = "stat-box",
-              span(class = "stat-value", char_cols + factor_cols),
-              span(class = "stat-label", "Categorical")),
-          div(class = "stat-box",
-              span(class = "stat-value", missing),
-              span(class = "stat-label", "Missing"))
+      div(
+        class = "stat-grid",
+        div(
+          class = "stat-box",
+          span(class = "stat-value", nrow(df)),
+          span(class = "stat-label", "Rows")
+        ),
+        div(
+          class = "stat-box",
+          span(class = "stat-value", ncol(df)),
+          span(class = "stat-label", "Columns")
+        ),
+        div(
+          class = "stat-box",
+          span(class = "stat-value", num_cols),
+          span(class = "stat-label", "Numeric")
+        ),
+        div(
+          class = "stat-box",
+          span(class = "stat-value", char_cols + factor_cols),
+          span(class = "stat-label", "Categorical")
+        ),
+        div(
+          class = "stat-box",
+          span(class = "stat-value", missing),
+          span(class = "stat-label", "Missing")
+        )
       )
     )
   })
-
+  
   # ---- Data preview -----------------------------------------------------------
   output$data_preview <- renderDT({
     req(current_data())
+    
     preview_df <- current_data()
+    
     if (!is.null(current_text_name())) {
       preview_df <- utils::head(preview_df, 200)
     }
-
+    
     datatable(
       preview_df,
       options = list(
@@ -1561,32 +1907,56 @@ server <- function(input, output, session) {
       filter = "top"
     )
   })
-
-
+  
   output$ab_session_info <- renderUI({
-    condition_label <- if (identical(ab_condition(), "A")) "Control A" else "Treatment B"
-    button_label <- if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly"
+    variant_label <- ab_condition()
+    
+    condition_label <- if (identical(variant_label, "A")) {
+      "Control A"
+    } else {
+      "Treatment B"
+    }
+    
+    button_label <- if (identical(variant_label, "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+    
     metrics_df <- ab_metrics()
     event_count <- nrow(metrics_df)
+    
     first_action_time <- if (any(metrics_df$event == "first_action_completed")) {
       metrics_df$seconds_from_start[match("first_action_completed", metrics_df$event)]
     } else {
       NA_real_
     }
-
-    HTML(paste0(
-      "<p><strong>Session ID:</strong> ", session_id, "</p>",
-      "<p><strong>Assigned condition:</strong> ", condition_label, "</p>",
-      "<p><strong>Assignment method:</strong> ", assignment_method(), "</p>",
-      "<p><strong>Button text shown:</strong> ", button_label, "</p>",
-      "<p><strong>Events logged this session:</strong> ", event_count, "</p>",
-      "<p><strong>Time to first action (seconds):</strong> ", ifelse(is.na(first_action_time), "Not yet recorded", first_action_time), "</p>"
-    ))
+    
+    demo_loaded <- if (any(metrics_df$event == "demo_dataset_loaded")) {
+      "Yes"
+    } else {
+      "No"
+    }
+    
+    HTML(
+      paste0(
+        "<p><strong>Session ID:</strong> ", session_id, "</p>",
+        "<p><strong>Assigned variant:</strong> ", variant_label, "</p>",
+        "<p><strong>Assigned condition:</strong> ", condition_label, "</p>",
+        "<p><strong>Assignment method:</strong> ", assignment_method(), "</p>",
+        "<p><strong>Button text shown:</strong> ", button_label, "</p>",
+        "<p><strong>Demo dataset loaded:</strong> ", demo_loaded, "</p>",
+        "<p><strong>Events logged this session:</strong> ", event_count, "</p>",
+        "<p><strong>Time to first action (seconds):</strong> ",
+        ifelse(is.na(first_action_time), "Not yet recorded", first_action_time),
+        "</p>"
+      )
+    )
   })
-
+  
   output$text_editor_ui <- renderUI({
     req(current_text_name())
-
+    
     div(
       class = "preview-card",
       h5(icon("pen-to-square"), " TXT File Editor"),
@@ -1600,11 +1970,15 @@ server <- function(input, output, session) {
       ),
       div(
         class = "d-flex gap-2",
-        downloadButton("download_txt", "Download Edited TXT", class = "btn-primary")
+        downloadButton(
+          "download_txt",
+          "Download Edited TXT",
+          class = "btn-primary"
+        )
       )
     )
   })
-
+  
   output$download_txt <- downloadHandler(
     filename = function() {
       current_text_name() %||% "edited_file.txt"
@@ -1613,7 +1987,7 @@ server <- function(input, output, session) {
       writeLines(current_text() %||% "", con = file, useBytes = TRUE)
     }
   )
-
+  
   output$download_ab_metrics <- downloadHandler(
     filename = function() {
       paste0("ab_metrics_", Sys.Date(), ".csv")
@@ -1621,6 +1995,7 @@ server <- function(input, output, session) {
     content = function(file) {
       if (file.exists(ab_log_file)) {
         ok <- file.copy(ab_log_file, file, overwrite = TRUE)
+        
         if (!isTRUE(ok)) {
           utils::write.csv(ab_metrics(), file, row.names = FALSE)
         }
@@ -1636,8 +2011,8 @@ server <- function(input, output, session) {
   cleaned_data <- reactive({
     req(current_data())
     df <- current_data()
-
-      # ---- ADDED: standardization block ------------------------------
+    
+    # ---- ADDED: standardization block ------------------------------
     if (isTRUE(input$trim_text) || isTRUE(input$lowercase_text) || isTRUE(input$blank_to_na) ||
         isTRUE(input$standardize_common_labels) || isTRUE(input$parse_numeric_like) ||
         isTRUE(input$try_parse_dates)) {
@@ -1645,48 +2020,48 @@ server <- function(input, output, session) {
         if (is.factor(x)) {
           x <- as.character(x)
         }
-
+        
         x <- standardize_text_column(
           x,
           trim_ws = isTRUE(input$trim_text),
           to_lower = isTRUE(input$lowercase_text),
           blank_to_na = isTRUE(input$blank_to_na)
         )
-
+        
         if (isTRUE(input$standardize_common_labels)) {
           x <- canonicalize_common_labels(x, use_lowercase = isTRUE(input$lowercase_text))
         }
-
+        
         if (isTRUE(input$parse_numeric_like)) {
           x <- try_parse_numeric_column(x)
         }
-
+        
         if (isTRUE(input$try_parse_dates) && !inherits(x, "Date")) {
           x <- try_standardize_date_column(x)
         }
-
+        
         x
       })
     }
-
+    
     if (!is.null(input$missing_method) && input$missing_method != "None") {
       if (input$missing_method == "Drop") {
         df <- na.omit(df)
-
+        
       } else if (input$missing_method == "Mean") {
         num_cols <- sapply(df, is.numeric)
         df[num_cols] <- lapply(df[num_cols], function(x) {
           x[is.na(x)] <- mean(x, na.rm = TRUE)
           x
         })
-
+        
       } else if (input$missing_method == "Median") {
         num_cols <- sapply(df, is.numeric)
         df[num_cols] <- lapply(df[num_cols], function(x) {
           x[is.na(x)] <- median(x, na.rm = TRUE)
           x
         })
-
+        
       } else if (input$missing_method == "Mode") {
         mode_func <- function(x) {
           x_non_na <- x[!is.na(x)]
@@ -1694,7 +2069,7 @@ server <- function(input, output, session) {
           ux <- unique(x_non_na)
           ux[which.max(tabulate(match(x_non_na, ux)))]
         }
-
+        
         df[] <- lapply(df, function(x) {
           fill_value <- mode_func(x)
           x[is.na(x)] <- fill_value
@@ -1702,11 +2077,11 @@ server <- function(input, output, session) {
         })
       }
     }
-
+    
     if (!is.null(input$remove_dup) && input$remove_dup) {
       df <- unique(df)
     }
-
+    
     # ---- ADDED: additional outlier treatment -----------------------
     if (!is.null(input$extra_outlier_treatment) && input$extra_outlier_treatment != "None") {
       numeric_names <- names(df)[sapply(df, is.numeric)]
@@ -1718,15 +2093,15 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
     if (!is.null(input$scaling) && input$scaling != "None") {
       num_cols <- sapply(df, is.numeric)
-
+      
       if (any(num_cols)) {
         if (input$scaling == "Standardize") {
           scaled <- scale(df[num_cols])
           df[num_cols] <- as.data.frame(scaled)
-
+          
         } else if (input$scaling == "Normalize") {
           df[num_cols] <- lapply(df[num_cols], function(x) {
             rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
@@ -1739,7 +2114,7 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
     if (!is.null(input$encoding) && input$encoding != "None") {
       if (input$encoding == "Label") {
         df[] <- lapply(df, function(x) {
@@ -1749,7 +2124,7 @@ server <- function(input, output, session) {
             x
           }
         })
-
+        
       } else if (input$encoding == "One-hot") {
         df[] <- lapply(df, function(x) {
           if (is.character(x)) as.factor(x) else x
@@ -1757,15 +2132,15 @@ server <- function(input, output, session) {
         df <- as.data.frame(model.matrix(~ . - 1, data = df))
       }
     }
-
+    
     if (!is.null(input$remove_outliers) && input$remove_outliers) {
       num_cols <- sapply(df, is.numeric)
-
+      
       for (col in names(df)[num_cols]) {
         Q1 <- quantile(df[[col]], 0.25, na.rm = TRUE)
         Q3 <- quantile(df[[col]], 0.75, na.rm = TRUE)
         IQR_val <- Q3 - Q1
-
+        
         if (!is.na(IQR_val) && IQR_val > 0) {
           lower <- Q1 - 1.5 * IQR_val
           upper <- Q3 + 1.5 * IQR_val
@@ -1774,78 +2149,145 @@ server <- function(input, output, session) {
         }
       }
     }
-
+    
     df
   })
-
+  
   observeEvent(input$track_cleaning_apply, {
     req(current_data(), cleaned_data())
-
+    
+    # ---- Detailed cleaning event properties ---------------------------------
+    current_tab <- input$main_navbar %||% "Data Cleaning"
+    current_dataset <- data_name() %||% "NA"
+    
+    variant_label <- ab_condition()
+    
+    condition_label <- if (identical(variant_label, "A")) {
+      "Control A"
+    } else {
+      "Treatment B"
+    }
+    
+    button_label <- if (identical(variant_label, "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+    
+    elapsed_seconds <- round(
+      as.numeric(difftime(Sys.time(), session_start_time, units = "secs")),
+      3
+    )
+    
+    event_timestamp <- as.character(Sys.time())
+    
+    event_context <- list(
+      session_id = session_id,
+      variant = variant_label,
+      ab_condition = condition_label,
+      button_text = button_label,
+      dataset = current_dataset,
+      tab_name = current_tab,
+      missing_method = input$missing_method %||% "None",
+      remove_duplicates = isTRUE(input$remove_dup),
+      scaling = input$scaling %||% "None",
+      encoding = input$encoding %||% "None",
+      remove_outliers = isTRUE(input$remove_outliers),
+      trim_text = isTRUE(input$trim_text),
+      lowercase_text = isTRUE(input$lowercase_text),
+      blank_to_na = isTRUE(input$blank_to_na),
+      standardize_common_labels = isTRUE(input$standardize_common_labels),
+      parse_numeric_like = isTRUE(input$parse_numeric_like),
+      try_parse_dates = isTRUE(input$try_parse_dates),
+      extra_outlier_treatment = input$extra_outlier_treatment %||% "None",
+      rows_before = nrow(current_data()),
+      rows_after = nrow(cleaned_data()),
+      cols_before = ncol(current_data()),
+      cols_after = ncol(cleaned_data()),
+      seconds_from_start = elapsed_seconds,
+      timestamp = event_timestamp
+    )
+    
+    # -------------------------------------------------------------------------
+    # 1) Session-level cleaning completion event
+    #    This is recorded only once per session.
+    #    Use this for funnel / completion-rate analysis.
+    # -------------------------------------------------------------------------
+    if (!cleaning_action_logged()) {
+      log_ab_event(
+        "cleaning_options_applied",
+        dataset_name = current_dataset,
+        tab_name = current_tab
+      )
+      
+      cleaning_action_logged(TRUE)
+      
+      # If cleaning is the user's first meaningful action, record it once.
+      if (!first_action_logged()) {
+        log_ab_event(
+          "first_action_completed",
+          dataset_name = current_dataset,
+          tab_name = current_tab
+        )
+        
+        first_action_logged(TRUE)
+      }
+    }
+    
+    # -------------------------------------------------------------------------
+    # 2) Click-level cleaning event
+    #    This is recorded every time the user clicks the cleaning tracking button.
+    #    Use this for click-count analysis, not completion-rate analysis.
+    # -------------------------------------------------------------------------
     track_datadog_action(
-      "cleaning_options_applied",
-      list(
-        missing_method = input$missing_method %||% "None",
-        remove_duplicates = isTRUE(input$remove_dup),
-        scaling = input$scaling %||% "None",
-        encoding = input$encoding %||% "None",
-        remove_outliers = isTRUE(input$remove_outliers),
-        trim_text = isTRUE(input$trim_text),
-        lowercase_text = isTRUE(input$lowercase_text),
-        blank_to_na = isTRUE(input$blank_to_na),
-        standardize_common_labels = isTRUE(input$standardize_common_labels),
-        parse_numeric_like = isTRUE(input$parse_numeric_like),
-        try_parse_dates = isTRUE(input$try_parse_dates),
-        extra_outlier_treatment = input$extra_outlier_treatment %||% "None",
-        rows_before = nrow(current_data()),
-        rows_after = nrow(cleaned_data()),
-        cols_before = ncol(current_data()),
-        cols_after = ncol(cleaned_data())
-      )
+      "cleaning_options_applied_click",
+      event_context
     )
-
+    
     track_posthog_event(
-      "cleaning_options_applied",
-      list(
-        missing_method = input$missing_method %||% "None",
-        remove_duplicates = isTRUE(input$remove_dup),
-        scaling = input$scaling %||% "None",
-        encoding = input$encoding %||% "None",
-        remove_outliers = isTRUE(input$remove_outliers),
-        trim_text = isTRUE(input$trim_text),
-        lowercase_text = isTRUE(input$lowercase_text),
-        blank_to_na = isTRUE(input$blank_to_na),
-        standardize_common_labels = isTRUE(input$standardize_common_labels),
-        parse_numeric_like = isTRUE(input$parse_numeric_like),
-        try_parse_dates = isTRUE(input$try_parse_dates),
-        extra_outlier_treatment = input$extra_outlier_treatment %||% "None",
-        rows_before = nrow(current_data()),
-        rows_after = nrow(cleaned_data()),
-        cols_before = ncol(current_data()),
-        cols_after = ncol(cleaned_data())
-      )
+      "cleaning_options_applied_click",
+      event_context
     )
-
-    showNotification("Cleaning options tracked to PostHog.", type = "message", duration = 3)
+    
+    showNotification(
+      "Cleaning options applied and tracked.",
+      type = "message",
+      duration = 3
+    )
   }, ignoreInit = TRUE)
-
+  
+  
   output$cleaned_preview <- renderDT({
     req(cleaned_data())
+    
     datatable(
       cleaned_data(),
-      options = list(pageLength = 10, scrollX = TRUE),
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE
+      ),
       rownames = FALSE,
       filter = "top"
     )
   })
-
-  # ---- ADDED: feedback outputs ------------------------------------
+  
+  # ---- Cleaning feedback outputs --------------------------------------------
   cleaning_feedback <- reactive({
     req(current_data(), cleaned_data())
+    
     before <- current_data()
     after <- cleaned_data()
-
+    
     data.frame(
-      Metric = c("Rows", "Columns", "Missing Values", "Duplicate Rows", "Numeric Columns", "Categorical Columns", "Date Columns"),
+      Metric = c(
+        "Rows",
+        "Columns",
+        "Missing Values",
+        "Duplicate Rows",
+        "Numeric Columns",
+        "Categorical Columns",
+        "Date Columns"
+      ),
       Before = c(
         nrow(before),
         ncol(before),
@@ -1867,15 +2309,19 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   })
-
+  
+  
   cleaning_type_changes <- reactive({
     req(current_data(), cleaned_data())
+    
     before <- current_data()
     after <- cleaned_data()
     common_cols <- intersect(names(before), names(after))
+    
     changes <- lapply(common_cols, function(col) {
       before_class <- class(before[[col]])[1]
       after_class <- class(after[[col]])[1]
+      
       if (!identical(before_class, after_class)) {
         data.frame(
           Column = col,
@@ -1887,75 +2333,117 @@ server <- function(input, output, session) {
         NULL
       }
     })
+    
     result <- do.call(rbind, changes)
+    
     if (is.null(result) || nrow(result) == 0) {
-      data.frame(Message = "No column type changes detected.", stringsAsFactors = FALSE)
+      data.frame(
+        Message = "No column type changes detected.",
+        stringsAsFactors = FALSE
+      )
     } else {
       result
     }
   })
-
+  
+  
   output$cleaning_feedback <- renderDT({
     req(cleaning_feedback())
-    datatable(cleaning_feedback(), options = list(dom = "t"), rownames = FALSE)
+    
+    datatable(
+      cleaning_feedback(),
+      options = list(dom = "t"),
+      rownames = FALSE
+    )
   })
-
+  
+  
   output$cleaning_type_changes <- renderDT({
     req(cleaning_type_changes())
-    datatable(cleaning_type_changes(), options = list(dom = "t", scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      cleaning_type_changes(),
+      options = list(
+        dom = "t",
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
+  
   output$cleaning_actions <- renderText({
     actions <- c()
-
+    
     if (isTRUE(input$trim_text)) {
       actions <- c(actions, "Trimmed whitespace in text columns")
     }
+    
     if (isTRUE(input$lowercase_text)) {
       actions <- c(actions, "Converted text columns to lowercase")
     }
+    
     if (isTRUE(input$blank_to_na)) {
       actions <- c(actions, "Converted blank / NA-like strings to missing values")
     }
+    
     if (isTRUE(input$standardize_common_labels)) {
       actions <- c(actions, "Standardized common categorical labels")
     }
+    
     if (isTRUE(input$parse_numeric_like)) {
       actions <- c(actions, "Converted numeric-like text columns to numeric when possible")
     }
+    
     if (isTRUE(input$try_parse_dates)) {
       actions <- c(actions, "Attempted to standardize date-like text columns")
     }
+    
     if (!is.null(input$missing_method) && input$missing_method != "None") {
       actions <- c(actions, paste("Missing-value method:", input$missing_method))
     }
+    
     if (isTRUE(input$remove_dup)) {
       actions <- c(actions, "Removed duplicate rows")
     }
-    if (!is.null(input$extra_outlier_treatment) && input$extra_outlier_treatment != "None") {
-      actions <- c(actions, paste("Additional outlier treatment:", input$extra_outlier_treatment))
+    
+    if (!is.null(input$extra_outlier_treatment) &&
+        input$extra_outlier_treatment != "None") {
+      actions <- c(
+        actions,
+        paste("Additional outlier treatment:", input$extra_outlier_treatment)
+      )
     }
+    
     if (!is.null(input$scaling) && input$scaling != "None") {
       actions <- c(actions, paste("Scaling method:", input$scaling))
     }
+    
     if (!is.null(input$encoding) && input$encoding != "None") {
       actions <- c(actions, paste("Encoding method:", input$encoding))
     }
+    
     if (isTRUE(input$remove_outliers)) {
       actions <- c(actions, "Removed outliers using the IQR rule")
     }
-    if (isTRUE(input$remove_outliers) && !is.null(input$extra_outlier_treatment) && input$extra_outlier_treatment != "None") {
-      actions <- c(actions, "Note: both IQR removal and an additional outlier treatment are active.")
+    
+    if (isTRUE(input$remove_outliers) &&
+        !is.null(input$extra_outlier_treatment) &&
+        input$extra_outlier_treatment != "None") {
+      actions <- c(
+        actions,
+        "Note: both IQR removal and an additional outlier treatment are active."
+      )
     }
-
+    
     if (length(actions) == 0) {
       "No cleaning steps are currently selected."
     } else {
       paste("Active cleaning steps:\n-", paste(actions, collapse = "\n- "))
     }
   })
-
-
+  
+  
   output$download_cleaned_data <- downloadHandler(
     filename = function() {
       paste0("cleaned_data_", Sys.Date(), ".csv")
@@ -1965,115 +2453,121 @@ server <- function(input, output, session) {
       utils::write.csv(cleaned_data(), file, row.names = FALSE)
     }
   )
-
+  
   # =============================================================================
   # FEATURE ENGINEERING SERVER LOGIC
   # =============================================================================
   engineered_data <- reactiveVal(NULL)
   fe_log <- reactiveVal("No feature engineering actions applied yet.")
-
+  
   observe({
     req(cleaned_data())
     engineered_data(cleaned_data())
   })
-
+  
   observe({
     req(engineered_data())
     df <- engineered_data()
-
+    
     all_cols <- names(df)
     numeric_cols <- names(df)[sapply(df, is.numeric)]
-
+    
     updateSelectInput(session, "fe_math_col1", choices = numeric_cols)
     updateSelectInput(session, "fe_math_col2", choices = numeric_cols)
-
+    
     updateSelectInput(session, "fe_bin_col", choices = numeric_cols)
-
+    
     updateSelectInput(session, "fe_inter_col1", choices = numeric_cols)
     updateSelectInput(session, "fe_inter_col2", choices = numeric_cols)
-
+    
     updateSelectInput(session, "fe_rename_old", choices = all_cols)
     updateSelectInput(session, "fe_drop_cols", choices = all_cols)
-
+    
     updateSelectInput(session, "eda_columns", choices = all_cols, selected = all_cols)
   })
-
+  
   # ---- ADDED: selector synchronization -----------------------------
   observe({
     req(engineered_data())
     df <- engineered_data()
     all_cols <- names(df)
     selected_viz_cols <- all_cols
-
+    
     if (!is.null(input$viz_columns)) {
       selected_viz_cols <- intersect(normalize_input_vector(input$viz_columns), all_cols)
-      if (length(selected_viz_cols) == 0 && length(all_cols) > 0 && length(normalize_input_vector(input$viz_columns)) > 0) {
+      if (length(selected_viz_cols) == 0 &&
+          length(all_cols) > 0 &&
+          length(normalize_input_vector(input$viz_columns)) > 0) {
         selected_viz_cols <- all_cols
       }
     }
-
+    
     updateSelectInput(session, "viz_columns", choices = all_cols, selected = selected_viz_cols)
-
+    
     subset_df <- df
     if (length(selected_viz_cols) > 0) {
       subset_df <- df[, selected_viz_cols, drop = FALSE]
     } else {
       subset_df <- df[, 0, drop = FALSE]
     }
-
+    
     subset_cols <- names(subset_df)
     numeric_cols <- get_numeric_cols(subset_df)
     categorical_cols <- get_categorical_cols(subset_df)
-
+    
     updateSelectInput(
       session,
       "viz_filter_col",
       choices = c("None", subset_cols),
-      selected = if (!is.null(input$viz_filter_col) && input$viz_filter_col %in% c("None", subset_cols)) {
+      selected = if (!is.null(input$viz_filter_col) &&
+                     input$viz_filter_col %in% c("None", subset_cols)) {
         input$viz_filter_col
       } else {
         "None"
       }
     )
-
+    
     updateSelectInput(
       session,
       "viz_color_var",
       choices = c("None", categorical_cols),
-      selected = if (!is.null(input$viz_color_var) && input$viz_color_var %in% c("None", categorical_cols)) {
+      selected = if (!is.null(input$viz_color_var) &&
+                     input$viz_color_var %in% c("None", categorical_cols)) {
         input$viz_color_var
       } else {
         "None"
       }
     )
-
+    
     updateSelectInput(
       session,
       "viz_group_var",
       choices = c("None", categorical_cols),
-      selected = if (!is.null(input$viz_group_var) && input$viz_group_var %in% c("None", categorical_cols)) {
+      selected = if (!is.null(input$viz_group_var) &&
+                     input$viz_group_var %in% c("None", categorical_cols)) {
         input$viz_group_var
       } else {
         "None"
       }
     )
-
+    
     updateSelectInput(
       session,
       "viz_metric_var",
       choices = c("None", numeric_cols),
-      selected = if (!is.null(input$viz_metric_var) && input$viz_metric_var %in% c("None", numeric_cols)) {
+      selected = if (!is.null(input$viz_metric_var) &&
+                     input$viz_metric_var %in% c("None", numeric_cols)) {
         input$viz_metric_var
       } else {
         "None"
       }
     )
-
+    
     plot_type <- input$viz_plot_type
     if (is.null(plot_type)) {
       plot_type <- "Histogram"
     }
-
+    
     if (plot_type == "Histogram") {
       updateSelectInput(
         session,
@@ -2081,7 +2575,7 @@ server <- function(input, output, session) {
         choices = numeric_cols,
         selected = keep_or_default(input$viz_x_var, numeric_cols, 1)
       )
-
+      
       updateSelectInput(
         session,
         "viz_y_var",
@@ -2089,17 +2583,17 @@ server <- function(input, output, session) {
         selected = character(0)
       )
     }
-
+    
     if (plot_type == "Boxplot") {
       x_choices <- c("All Data", categorical_cols)
-
+      
       updateSelectInput(
         session,
         "viz_x_var",
         choices = x_choices,
         selected = keep_or_default(input$viz_x_var, x_choices, 1)
       )
-
+      
       updateSelectInput(
         session,
         "viz_y_var",
@@ -2107,7 +2601,7 @@ server <- function(input, output, session) {
         selected = keep_or_default(input$viz_y_var, numeric_cols, 1)
       )
     }
-
+    
     if (plot_type == "Scatter Plot") {
       updateSelectInput(
         session,
@@ -2115,7 +2609,7 @@ server <- function(input, output, session) {
         choices = numeric_cols,
         selected = keep_or_default(input$viz_x_var, numeric_cols, 1)
       )
-
+      
       updateSelectInput(
         session,
         "viz_y_var",
@@ -2123,7 +2617,7 @@ server <- function(input, output, session) {
         selected = keep_or_default(input$viz_y_var, numeric_cols, 2)
       )
     }
-
+    
     if (plot_type == "Bar Chart") {
       updateSelectInput(
         session,
@@ -2131,7 +2625,7 @@ server <- function(input, output, session) {
         choices = categorical_cols,
         selected = keep_or_default(input$viz_x_var, categorical_cols, 1)
       )
-
+      
       updateSelectInput(
         session,
         "viz_y_var",
@@ -2140,40 +2634,142 @@ server <- function(input, output, session) {
       )
     }
   })
-
+  
+  # ---- Helper: log feature engineering engagement into A/B funnel -------------
+  log_feature_engineering_action <- function(action_type, detail = list()) {
+    
+    current_dataset <- data_name() %||% "NA"
+    current_tab <- input$main_navbar %||% "Feature Engineering"
+    
+    variant_label <- ab_condition()
+    
+    condition_label <- if (identical(variant_label, "A")) {
+      "Control A"
+    } else {
+      "Treatment B"
+    }
+    
+    button_label <- if (identical(variant_label, "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+    
+    elapsed_seconds <- round(
+      as.numeric(difftime(Sys.time(), session_start_time, units = "secs")),
+      3
+    )
+    
+    event_timestamp <- as.character(Sys.time())
+    
+    # -------------------------------------------------------------------------
+    # 1) Session-level feature engineering completion event
+    #    This is recorded only once per session.
+    #    Use this for funnel / completion-rate analysis.
+    # -------------------------------------------------------------------------
+    if (!feature_engineering_action_logged()) {
+      log_ab_event(
+        "feature_engineering_applied",
+        dataset_name = current_dataset,
+        tab_name = current_tab
+      )
+      
+      feature_engineering_action_logged(TRUE)
+      
+      if (!first_action_logged()) {
+        log_ab_event(
+          "first_action_completed",
+          dataset_name = current_dataset,
+          tab_name = current_tab
+        )
+        
+        first_action_logged(TRUE)
+      }
+    }
+    
+    # -------------------------------------------------------------------------
+    # 2) Operation-level feature engineering event
+    #    This is recorded every time the user applies a feature engineering action.
+    #    Use this for interaction-count analysis, not completion-rate analysis.
+    # -------------------------------------------------------------------------
+    event_context <- c(
+      list(
+        session_id = session_id,
+        variant = variant_label,
+        ab_condition = condition_label,
+        button_text = button_label,
+        action_type = action_type,
+        dataset = current_dataset,
+        tab_name = current_tab,
+        seconds_from_start = elapsed_seconds,
+        timestamp = event_timestamp
+      ),
+      detail
+    )
+    
+    track_datadog_action(
+      "feature_engineering_applied_click",
+      event_context
+    )
+    
+    track_posthog_event(
+      "feature_engineering_applied_click",
+      event_context
+    )
+  }
+  
+  
   observeEvent(input$reset_engineering, {
     req(cleaned_data())
+    
     engineered_data(cleaned_data())
     fe_log("Reset feature-engineered dataset back to cleaned data.")
-    showNotification("Feature engineering reset to cleaned data.", type = "message")
+    
+    showNotification(
+      "Feature engineering reset to cleaned data.",
+      type = "message"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "reset",
+      detail = list(
+        rows_after = nrow(cleaned_data()),
+        cols_after = ncol(cleaned_data())
+      )
+    )
+    
     track_posthog_event(
       "feature_engineering_reset",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         rows_after = nrow(cleaned_data()),
         cols_after = ncol(cleaned_data())
       )
     )
   })
-
+  
+  
   observeEvent(input$apply_math_feature, {
     req(engineered_data(), input$fe_new_col_math, input$fe_math_col1, input$fe_math_col2)
-
+    
     df <- engineered_data()
     new_col <- trimws(input$fe_new_col_math)
-
+    
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-
+    
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-
+    
     x <- df[[input$fe_math_col1]]
     y <- df[[input$fe_math_col2]]
-
+    
     df[[new_col]] <- switch(
       input$fe_math_operator,
       "+" = x + y,
@@ -2181,14 +2777,38 @@ server <- function(input, output, session) {
       "*" = x * y,
       "/" = ifelse(y == 0, NA, x / y)
     )
-
+    
     engineered_data(df)
-    fe_log(paste0("Created math feature '", new_col, "' using ",
-                  input$fe_math_col1, " ", input$fe_math_operator, " ", input$fe_math_col2, "."))
-    showNotification(paste("Created new feature:", new_col), type = "message")
+    
+    fe_log(
+      paste0(
+        "Created math feature '", new_col, "' using ",
+        input$fe_math_col1, " ", input$fe_math_operator, " ", input$fe_math_col2, "."
+      )
+    )
+    
+    showNotification(
+      paste("Created new feature:", new_col),
+      type = "message"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "math",
+      detail = list(
+        new_column = new_col,
+        col1 = input$fe_math_col1,
+        operator = input$fe_math_operator,
+        col2 = input$fe_math_col2,
+        total_columns_after = ncol(df)
+      )
+    )
+    
     track_posthog_event(
       "feature_math_created",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         new_column = new_col,
         col1 = input$fe_math_col1,
         operator = input$fe_math_operator,
@@ -2197,53 +2817,80 @@ server <- function(input, output, session) {
       )
     )
   })
-
+  
+  
   observeEvent(input$apply_bin_feature, {
     req(engineered_data(), input$fe_bin_col, input$fe_bin_new_col)
-
+    
     df <- engineered_data()
     new_col <- trimws(input$fe_bin_new_col)
-
+    
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-
+    
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-
+    
     if (!is.numeric(df[[input$fe_bin_col]])) {
       showNotification("Selected column must be numeric.", type = "error")
       return()
     }
-
-    breaks <- unique(quantile(
-      df[[input$fe_bin_col]],
-      probs = seq(0, 1, length.out = input$fe_bin_k + 1),
-      na.rm = TRUE
-    ))
-
+    
+    breaks <- unique(
+      quantile(
+        df[[input$fe_bin_col]],
+        probs = seq(0, 1, length.out = input$fe_bin_k + 1),
+        na.rm = TRUE
+      )
+    )
+    
     if (length(breaks) <= 2) {
       showNotification("Not enough unique values to create bins.", type = "error")
       return()
     }
-
+    
     df[[new_col]] <- cut(
       df[[input$fe_bin_col]],
       breaks = breaks,
       include.lowest = TRUE,
       dig.lab = 8
     )
-
+    
     engineered_data(df)
-    fe_log(paste0("Created binned feature '", new_col, "' from column '",
-                  input$fe_bin_col, "' with ", input$fe_bin_k, " bins."))
-    showNotification(paste("Created binned feature:", new_col), type = "message")
+    
+    fe_log(
+      paste0(
+        "Created binned feature '", new_col,
+        "' from column '", input$fe_bin_col,
+        "' with ", input$fe_bin_k, " bins."
+      )
+    )
+    
+    showNotification(
+      paste("Created binned feature:", new_col),
+      type = "message"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "bin",
+      detail = list(
+        new_column = new_col,
+        source_column = input$fe_bin_col,
+        bins = input$fe_bin_k,
+        total_columns_after = ncol(df)
+      )
+    )
+    
     track_posthog_event(
       "feature_bin_created",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         new_column = new_col,
         source_column = input$fe_bin_col,
         bins = input$fe_bin_k,
@@ -2251,32 +2898,56 @@ server <- function(input, output, session) {
       )
     )
   })
-
+  
+  
   observeEvent(input$apply_interaction_feature, {
     req(engineered_data(), input$fe_inter_col1, input$fe_inter_col2, input$fe_inter_new_col)
-
+    
     df <- engineered_data()
     new_col <- trimws(input$fe_inter_new_col)
-
+    
     if (new_col == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-
+    
     if (new_col %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-
+    
     df[[new_col]] <- df[[input$fe_inter_col1]] * df[[input$fe_inter_col2]]
-
+    
     engineered_data(df)
-    fe_log(paste0("Created interaction feature '", new_col, "' using ",
-                  input$fe_inter_col1, " * ", input$fe_inter_col2, "."))
-    showNotification(paste("Created interaction feature:", new_col), type = "message")
+    
+    fe_log(
+      paste0(
+        "Created interaction feature '", new_col,
+        "' using ", input$fe_inter_col1, " * ", input$fe_inter_col2, "."
+      )
+    )
+    
+    showNotification(
+      paste("Created interaction feature:", new_col),
+      type = "message"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "interaction",
+      detail = list(
+        new_column = new_col,
+        col1 = input$fe_inter_col1,
+        col2 = input$fe_inter_col2,
+        total_columns_after = ncol(df)
+      )
+    )
+    
     track_posthog_event(
       "feature_interaction_created",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         new_column = new_col,
         col1 = input$fe_inter_col1,
         col2 = input$fe_inter_col2,
@@ -2284,92 +2955,167 @@ server <- function(input, output, session) {
       )
     )
   })
-
+  
+  
   observeEvent(input$apply_rename_column, {
     req(engineered_data(), input$fe_rename_old, input$fe_rename_new)
-
+    
     df <- engineered_data()
     new_name <- trimws(input$fe_rename_new)
-
+    
     if (new_name == "") {
       showNotification("Please provide a new column name.", type = "error")
       return()
     }
-
+    
     if (new_name %in% names(df)) {
       showNotification("New column name already exists.", type = "error")
       return()
     }
-
+    
     names(df)[names(df) == input$fe_rename_old] <- new_name
     engineered_data(df)
-
-    fe_log(paste0("Renamed column '", input$fe_rename_old, "' to '", new_name, "'."))
-    showNotification(paste("Renamed", input$fe_rename_old, "to", new_name), type = "message")
+    
+    fe_log(
+      paste0(
+        "Renamed column '", input$fe_rename_old,
+        "' to '", new_name, "'."
+      )
+    )
+    
+    showNotification(
+      paste("Renamed", input$fe_rename_old, "to", new_name),
+      type = "message"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "rename",
+      detail = list(
+        old_name = input$fe_rename_old,
+        new_name = new_name,
+        total_columns_after = ncol(df)
+      )
+    )
+    
     track_posthog_event(
       "feature_column_renamed",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         old_name = input$fe_rename_old,
         new_name = new_name,
         total_columns_after = ncol(df)
       )
     )
   })
-
+  
+  
   observeEvent(input$apply_drop_columns, {
     req(engineered_data())
-
+    
     df <- engineered_data()
-
+    
     if (is.null(input$fe_drop_cols) || length(input$fe_drop_cols) == 0) {
       showNotification("Please select at least one column to drop.", type = "error")
       return()
     }
-
+    
     if (length(input$fe_drop_cols) >= ncol(df)) {
       showNotification("Cannot drop all columns.", type = "error")
       return()
     }
-
+    
     df <- df[, !(names(df) %in% input$fe_drop_cols), drop = FALSE]
     engineered_data(df)
-
-    fe_log(paste0("Dropped column(s): ", paste(input$fe_drop_cols, collapse = ", "), "."))
-    showNotification("Selected columns dropped.", type = "warning")
+    
+    fe_log(
+      paste0(
+        "Dropped column(s): ",
+        paste(input$fe_drop_cols, collapse = ", "),
+        "."
+      )
+    )
+    
+    showNotification(
+      "Selected columns dropped.",
+      type = "warning"
+    )
+    
+    log_feature_engineering_action(
+      action_type = "drop",
+      detail = list(
+        dropped_columns = paste(input$fe_drop_cols, collapse = ", "),
+        dropped_count = length(input$fe_drop_cols),
+        total_columns_after = ncol(df)
+      )
+    )
+    
     track_posthog_event(
       "feature_columns_dropped",
       list(
+        session_id = session_id,
+        variant = ab_condition(),
+        ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
         dropped_columns = paste(input$fe_drop_cols, collapse = ", "),
         dropped_count = length(input$fe_drop_cols),
         total_columns_after = ncol(df)
       )
     )
   })
-
+  
+  
   output$fe_before_preview <- renderDT({
     req(cleaned_data())
-    datatable(cleaned_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      cleaned_data(),
+      options = list(
+        pageLength = 8,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
+  
   output$fe_after_preview <- renderDT({
     req(engineered_data())
-    datatable(engineered_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      engineered_data(),
+      options = list(
+        pageLength = 8,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
+  
   output$fe_log <- renderText({
     fe_log()
   })
-
+  
   # ---- ADDED: Student 4 feature summary + download --------------------------
   fe_change_summary <- reactive({
     req(cleaned_data(), engineered_data())
+    
     before <- cleaned_data()
     after <- engineered_data()
+    
     new_cols <- setdiff(names(after), names(before))
     dropped_cols <- setdiff(names(before), names(after))
-
+    
     data.frame(
-      Metric = c("Rows Before", "Rows After", "Columns Before", "Columns After", "New Columns", "Dropped Columns"),
+      Metric = c(
+        "Rows Before",
+        "Rows After",
+        "Columns Before",
+        "Columns After",
+        "New Columns",
+        "Dropped Columns"
+      ),
       Value = c(
         nrow(before),
         nrow(after),
@@ -2381,12 +3127,20 @@ server <- function(input, output, session) {
       stringsAsFactors = FALSE
     )
   })
-
+  
   output$fe_change_summary <- renderDT({
     req(fe_change_summary())
-    datatable(fe_change_summary(), options = list(dom = "t", scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      fe_change_summary(),
+      options = list(
+        dom = "t",
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
   output$download_engineered_data <- downloadHandler(
     filename = function() {
       paste0("engineered_data_", Sys.Date(), ".csv")
@@ -2403,18 +3157,18 @@ server <- function(input, output, session) {
   eda_data <- reactive({
     req(engineered_data())
     df <- engineered_data()
-
+    
     if (!is.null(input$eda_columns) && length(input$eda_columns) > 0) {
       df <- df[, input$eda_columns, drop = FALSE]
     }
-
+    
     df
   })
-
+  
   output$eda_summary_table <- renderDT({
     req(eda_data())
     df <- eda_data()
-
+    
     summary_df <- data.frame(
       Column = names(df),
       Type = sapply(df, function(x) class(x)[1]),
@@ -2422,31 +3176,58 @@ server <- function(input, output, session) {
       Unique_Values = sapply(df, function(x) length(unique(x))),
       stringsAsFactors = FALSE
     )
-
+    
     numeric_cols <- sapply(df, is.numeric)
-
+    
     summary_df$Mean <- NA
     summary_df$Median <- NA
     summary_df$SD <- NA
     summary_df$Min <- NA
     summary_df$Max <- NA
-
+    
     if (any(numeric_cols)) {
-      summary_df$Mean[numeric_cols]   <- sapply(df[numeric_cols], function(x) round(mean(x, na.rm = TRUE), 4))
-      summary_df$Median[numeric_cols] <- sapply(df[numeric_cols], function(x) round(median(x, na.rm = TRUE), 4))
-      summary_df$SD[numeric_cols]     <- sapply(df[numeric_cols], function(x) round(sd(x, na.rm = TRUE), 4))
-      summary_df$Min[numeric_cols]    <- sapply(df[numeric_cols], function(x) round(min(x, na.rm = TRUE), 4))
-      summary_df$Max[numeric_cols]    <- sapply(df[numeric_cols], function(x) round(max(x, na.rm = TRUE), 4))
+      summary_df$Mean[numeric_cols] <- sapply(
+        df[numeric_cols],
+        function(x) round(mean(x, na.rm = TRUE), 4)
+      )
+      
+      summary_df$Median[numeric_cols] <- sapply(
+        df[numeric_cols],
+        function(x) round(median(x, na.rm = TRUE), 4)
+      )
+      
+      summary_df$SD[numeric_cols] <- sapply(
+        df[numeric_cols],
+        function(x) round(sd(x, na.rm = TRUE), 4)
+      )
+      
+      summary_df$Min[numeric_cols] <- sapply(
+        df[numeric_cols],
+        function(x) round(min(x, na.rm = TRUE), 4)
+      )
+      
+      summary_df$Max[numeric_cols] <- sapply(
+        df[numeric_cols],
+        function(x) round(max(x, na.rm = TRUE), 4)
+      )
     }
-
-    datatable(summary_df, options = list(pageLength = 10, scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      summary_df,
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
   output$eda_corr_table <- renderDT({
     req(eda_data())
     df <- eda_data()
+    
     numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
-
+    
     if (ncol(numeric_df) < 2) {
       return(
         datatable(
@@ -2458,34 +3239,54 @@ server <- function(input, output, session) {
         )
       )
     }
-
-    corr_mat <- round(cor(numeric_df, use = "pairwise.complete.obs"), 4)
-    corr_df <- data.frame(Variable = rownames(corr_mat), corr_mat, check.names = FALSE)
-
+    
+    corr_mat <- round(
+      cor(numeric_df, use = "pairwise.complete.obs"),
+      4
+    )
+    
+    corr_df <- data.frame(
+      Variable = rownames(corr_mat),
+      corr_mat,
+      check.names = FALSE
+    )
+    
     datatable(
       corr_df,
-      options = list(pageLength = 10, scrollX = TRUE),
+      options = list(
+        pageLength = 10,
+        scrollX = TRUE
+      ),
       rownames = FALSE
     )
   })
-
+  
   output$eda_corr_heatmap <- renderPlot({
     req(eda_data())
     df <- eda_data()
+    
     numeric_df <- df[, sapply(df, is.numeric), drop = FALSE]
-
+    
     if (ncol(numeric_df) < 2) {
       plot.new()
-      text(0.5, 0.5, "At least two numeric columns are required for a correlation heatmap.")
+      text(
+        0.5,
+        0.5,
+        "At least two numeric columns are required for a correlation heatmap."
+      )
       return()
     }
-
-    corr_mat <- cor(numeric_df, use = "pairwise.complete.obs")
-
+    
+    corr_mat <- cor(
+      numeric_df,
+      use = "pairwise.complete.obs"
+    )
+    
     op <- par(no.readonly = TRUE)
     on.exit(par(op))
+    
     par(mar = c(8, 8, 3, 2))
-
+    
     image(
       1:ncol(corr_mat),
       1:nrow(corr_mat),
@@ -2495,50 +3296,71 @@ server <- function(input, output, session) {
       ylab = "",
       main = "Correlation Heatmap"
     )
-
-    axis(1, at = 1:ncol(corr_mat), labels = colnames(corr_mat), las = 2)
-    axis(2, at = 1:nrow(corr_mat), labels = rev(rownames(corr_mat)), las = 2)
-
+    
+    axis(
+      1,
+      at = 1:ncol(corr_mat),
+      labels = colnames(corr_mat),
+      las = 2
+    )
+    
+    axis(
+      2,
+      at = 1:nrow(corr_mat),
+      labels = rev(rownames(corr_mat)),
+      las = 2
+    )
+    
     for (i in 1:nrow(corr_mat)) {
       for (j in 1:ncol(corr_mat)) {
-        text(j, nrow(corr_mat) - i + 1, labels = sprintf("%.2f", corr_mat[i, j]), cex = 0.8)
+        text(
+          j,
+          nrow(corr_mat) - i + 1,
+          labels = sprintf("%.2f", corr_mat[i, j]),
+          cex = 0.8
+        )
       }
     }
   })
 
-# =============================================================================
+  # =============================================================================
   # INTERACTIVE EDA SERVER LOGIC
   # =============================================================================
   viz_data <- reactive({
     req(engineered_data())
     df <- engineered_data()
-
+    
     viz_columns_selected <- normalize_input_vector(input$viz_columns)
-
+    
     if (!is.null(input$viz_columns) && length(viz_columns_selected) > 0) {
       viz_columns_selected <- intersect(viz_columns_selected, names(df))
+      
       if (length(viz_columns_selected) == 0) {
         viz_columns_selected <- names(df)
       }
+      
       df <- df[, viz_columns_selected, drop = FALSE]
+      
     } else if (!is.null(input$viz_columns) && length(viz_columns_selected) == 0) {
       df <- df[, 0, drop = FALSE]
     }
-
+    
     df
   })
-
+  
+  
   filtered_viz_data <- reactive({
     req(viz_data())
+    
     df <- viz_data()
     filter_col <- input$viz_filter_col
-
+    
     if (is.null(filter_col) || filter_col == "None" || !(filter_col %in% names(df))) {
       return(df)
     }
-
+    
     x <- df[[filter_col]]
-
+    
     if (inherits(x, "Date")) {
       if (!is.null(input$viz_filter_date) && length(input$viz_filter_date) == 2) {
         start_date <- as.Date(input$viz_filter_date[1])
@@ -2546,37 +3368,137 @@ server <- function(input, output, session) {
         keep <- !is.na(x) & x >= start_date & x <= end_date
         df <- df[keep, , drop = FALSE]
       }
+      
     } else if (is.numeric(x)) {
       if (!is.null(input$viz_filter_num) && length(input$viz_filter_num) == 2) {
         keep <- !is.na(x) & x >= input$viz_filter_num[1] & x <= input$viz_filter_num[2]
         df <- df[keep, , drop = FALSE]
       }
+      
     } else {
       if (!is.null(input$viz_filter_cat) && length(input$viz_filter_cat) > 0) {
         keep <- !is.na(x) & as.character(x) %in% input$viz_filter_cat
         df <- df[keep, , drop = FALSE]
       }
     }
-
+    
     df
   })
-
+  
+  
+  # ---- Helper: log Interactive EDA plot generation into A/B funnel ------------
+  log_interactive_eda_plot <- function(plot_type = "Unknown", x_var = "NA", y_var = "NA") {
+    req(filtered_viz_data())
+    
+    df <- filtered_viz_data()
+    
+    if (nrow(df) == 0 || ncol(df) == 0) {
+      return(invisible(NULL))
+    }
+    
+    current_dataset <- data_name() %||% "NA"
+    current_tab <- input$main_navbar %||% "Interactive EDA"
+    
+    variant_label <- ab_condition()
+    
+    condition_label <- if (identical(variant_label, "A")) {
+      "Control A"
+    } else {
+      "Treatment B"
+    }
+    
+    button_label <- if (identical(variant_label, "A")) {
+      "Load Demo Dataset"
+    } else {
+      "Try Demo Dataset Instantly"
+    }
+    
+    elapsed_seconds <- round(
+      as.numeric(difftime(Sys.time(), session_start_time, units = "secs")),
+      3
+    )
+    
+    event_timestamp <- as.character(Sys.time())
+    
+    # -------------------------------------------------------------------------
+    # 1) Session-level EDA plot completion event
+    #    This is recorded only once per session.
+    #    Use this for funnel / completion-rate analysis.
+    # -------------------------------------------------------------------------
+    if (!interactive_eda_plot_logged()) {
+      log_ab_event(
+        "eda_plot_generated",
+        dataset_name = current_dataset,
+        tab_name = current_tab
+      )
+      
+      interactive_eda_plot_logged(TRUE)
+      
+      if (!first_action_logged()) {
+        log_ab_event(
+          "first_action_completed",
+          dataset_name = current_dataset,
+          tab_name = current_tab
+        )
+        
+        first_action_logged(TRUE)
+      }
+    }
+    
+    # -------------------------------------------------------------------------
+    # 2) Detail-level EDA plot event
+    #    This can be recorded multiple times if the user changes plot settings.
+    #    Use this for interaction-count / configuration analysis.
+    # -------------------------------------------------------------------------
+    event_context <- list(
+      session_id = session_id,
+      variant = variant_label,
+      ab_condition = condition_label,
+      button_text = button_label,
+      dataset = current_dataset,
+      tab_name = current_tab,
+      plot_type = plot_type %||% "Unknown",
+      x_var = x_var %||% "NA",
+      y_var = y_var %||% "NA",
+      row_count = nrow(df),
+      column_count = ncol(df),
+      seconds_from_start = elapsed_seconds,
+      timestamp = event_timestamp
+    )
+    
+    track_datadog_action(
+      "eda_plot_generated_detail",
+      event_context
+    )
+    
+    track_posthog_event(
+      "eda_plot_generated_detail",
+      event_context
+    )
+    
+    invisible(NULL)
+  }
+  
+  
   output$viz_filter_value_ui <- renderUI({
     req(viz_data())
+    
     df <- viz_data()
     filter_col <- input$viz_filter_col
-
+    
     if (is.null(filter_col) || filter_col == "None" || !(filter_col %in% names(df))) {
       return(NULL)
     }
-
+    
     x <- df[[filter_col]]
-
+    
     if (inherits(x, "Date")) {
       values <- x[!is.na(x)]
+      
       if (length(values) == 0) {
         return(helpText("No non-missing dates are available for this filter."))
       }
+      
       return(
         dateRangeInput(
           "viz_filter_date",
@@ -2586,15 +3508,18 @@ server <- function(input, output, session) {
         )
       )
     }
-
+    
     if (is.numeric(x)) {
       rng <- range(x, na.rm = TRUE)
+      
       if (!all(is.finite(rng))) {
         return(helpText("The selected numeric column does not have a usable range."))
       }
+      
       if (rng[1] == rng[2]) {
         return(helpText("The selected numeric column has only one unique value."))
       }
+      
       return(
         sliderInput(
           "viz_filter_num",
@@ -2605,12 +3530,14 @@ server <- function(input, output, session) {
         )
       )
     }
-
+    
     choices <- sort(unique(as.character(x)))
     choices <- choices[!is.na(choices)]
+    
     if (length(choices) == 0) {
       return(helpText("No non-missing values are available for this filter."))
     }
+    
     selectInput(
       "viz_filter_cat",
       "Values:",
@@ -2619,55 +3546,76 @@ server <- function(input, output, session) {
       multiple = TRUE
     )
   })
-
+  
+  
   output$viz_preview <- renderDT({
     req(filtered_viz_data())
+    
     datatable(
       filtered_viz_data(),
-      options = list(pageLength = 8, scrollX = TRUE),
+      options = list(
+        pageLength = 8,
+        scrollX = TRUE
+      ),
       rownames = FALSE,
       filter = "top"
     )
   })
-
+  
+  
   output$viz_overview <- renderUI({
     req(filtered_viz_data())
+    
     df <- filtered_viz_data()
-
+    
     num_cols <- length(get_numeric_cols(df))
     categorical_cols <- length(get_categorical_cols(df))
     date_cols <- length(get_date_cols(df))
     missing_vals <- sum(is.na(df))
-
+    
     div(
       class = "stat-grid",
-      div(class = "stat-box",
-          span(class = "stat-value", nrow(df)),
-          span(class = "stat-label", "Rows")),
-      div(class = "stat-box",
-          span(class = "stat-value", ncol(df)),
-          span(class = "stat-label", "Columns")),
-      div(class = "stat-box",
-          span(class = "stat-value", num_cols),
-          span(class = "stat-label", "Numeric")),
-      div(class = "stat-box",
-          span(class = "stat-value", categorical_cols),
-          span(class = "stat-label", "Categorical")),
-      div(class = "stat-box",
-          span(class = "stat-value", date_cols),
-          span(class = "stat-label", "Date")),
-      div(class = "stat-box",
-          span(class = "stat-value", missing_vals),
-          span(class = "stat-label", "Missing"))
+      div(
+        class = "stat-box",
+        span(class = "stat-value", nrow(df)),
+        span(class = "stat-label", "Rows")
+      ),
+      div(
+        class = "stat-box",
+        span(class = "stat-value", ncol(df)),
+        span(class = "stat-label", "Columns")
+      ),
+      div(
+        class = "stat-box",
+        span(class = "stat-value", num_cols),
+        span(class = "stat-label", "Numeric")
+      ),
+      div(
+        class = "stat-box",
+        span(class = "stat-value", categorical_cols),
+        span(class = "stat-label", "Categorical")
+      ),
+      div(
+        class = "stat-box",
+        span(class = "stat-value", date_cols),
+        span(class = "stat-label", "Date")
+      ),
+      div(
+        class = "stat-box",
+        span(class = "stat-value", missing_vals),
+        span(class = "stat-label", "Missing")
+      )
     )
   })
-
+  
+  
   group_summary_data <- reactive({
     req(filtered_viz_data())
+    
     df <- filtered_viz_data()
     group_var <- input$viz_group_var
     metric_var <- input$viz_metric_var
-
+    
     if (is.null(group_var) || group_var == "None" || !(group_var %in% names(df)) ||
         is.null(metric_var) || metric_var == "None" || !(metric_var %in% names(df)) ||
         !is.numeric(df[[metric_var]])) {
@@ -2676,22 +3624,24 @@ server <- function(input, output, session) {
         stringsAsFactors = FALSE
       ))
     }
-
+    
     temp <- data.frame(
       Group = as.character(df[[group_var]]),
       Metric = df[[metric_var]],
       stringsAsFactors = FALSE
     )
+    
     temp <- temp[!is.na(temp$Group) & temp$Group != "", , drop = FALSE]
-
+    
     if (nrow(temp) == 0) {
       return(data.frame(
         Message = "No grouped observations are available for the current filter settings.",
         stringsAsFactors = FALSE
       ))
     }
-
+    
     split_metric <- split(temp$Metric, temp$Group)
+    
     summary_df <- data.frame(
       Group = names(split_metric),
       Count = sapply(split_metric, function(x) sum(!is.na(x))),
@@ -2702,183 +3652,74 @@ server <- function(input, output, session) {
       Max = sapply(split_metric, function(x) round(max(x, na.rm = TRUE), 4)),
       stringsAsFactors = FALSE
     )
-
+    
     summary_df[order(summary_df$Count, decreasing = TRUE), , drop = FALSE]
   })
-
+  
+  
   output$viz_group_summary <- renderDT({
     req(group_summary_data())
-    datatable(group_summary_data(), options = list(pageLength = 8, scrollX = TRUE), rownames = FALSE)
+    
+    datatable(
+      group_summary_data(),
+      options = list(
+        pageLength = 8,
+        scrollX = TRUE
+      ),
+      rownames = FALSE
+    )
   })
-
+  
+  
   output$download_viz_data <- downloadHandler(
     filename = function() {
       paste0("interactive_eda_filtered_", Sys.Date(), ".csv")
     },
     content = function(file) {
       req(filtered_viz_data())
+      
+      df <- filtered_viz_data()
+      
       track_posthog_event(
         "interactive_eda_download",
         list(
-          row_count = nrow(filtered_viz_data()),
-          column_count = ncol(filtered_viz_data()),
+          session_id = session_id,
+          variant = ab_condition(),
+          ab_condition = if (identical(ab_condition(), "A")) "Control A" else "Treatment B",
+          button_text = if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly",
+          dataset = data_name() %||% "NA",
+          tab_name = input$main_navbar %||% "Interactive EDA",
+          row_count = nrow(df),
+          column_count = ncol(df),
           plot_type = input$viz_plot_type %||% "Unknown"
         )
       )
-      utils::write.csv(filtered_viz_data(), file, row.names = FALSE)
+      
+      utils::write.csv(df, file, row.names = FALSE)
     }
   )
-
-  output$viz_dynamic_insights <- renderText({
-    req(filtered_viz_data())
-    df <- filtered_viz_data()
-
-    if (nrow(df) == 0) {
-      return("No rows are available after the current filter settings.")
-    }
-
-    plot_type <- input$viz_plot_type
-
-    if (plot_type == "Histogram") {
-      x_var <- input$viz_x_var
-      if (is.null(x_var) || !(x_var %in% names(df)) || !is.numeric(df[[x_var]])) {
-        return("Select a numeric X variable to view histogram insights.")
-      }
-      x <- df[[x_var]]
-      complete_n <- sum(!is.na(x))
-      missing_n <- sum(is.na(x))
-      if (complete_n == 0) {
-        return("The selected histogram variable has no non-missing values.")
-      }
-      return(paste(
-        "Histogram insights",
-        paste("Variable:", x_var),
-        paste("Non-missing observations:", complete_n),
-        paste("Missing values:", missing_n),
-        paste("Mean:", round(mean(x, na.rm = TRUE), 4)),
-        paste("Median:", round(median(x, na.rm = TRUE), 4)),
-        paste("Standard deviation:", round(sd(x, na.rm = TRUE), 4)),
-        paste("Minimum:", round(min(x, na.rm = TRUE), 4)),
-        paste("Maximum:", round(max(x, na.rm = TRUE), 4)),
-        sep = "\n"
-      ))
-    }
-
-    if (plot_type == "Boxplot") {
-      y_var <- input$viz_y_var
-      x_var <- input$viz_x_var
-      if (is.null(y_var) || !(y_var %in% names(df)) || !is.numeric(df[[y_var]])) {
-        return("Select a numeric Y variable to view boxplot insights.")
-      }
-      y <- df[[y_var]]
-      if (x_var == "All Data" || is.null(x_var) || !(x_var %in% names(df))) {
-        return(paste(
-          "Boxplot insights",
-          paste("Variable:", y_var),
-          paste("Median:", round(median(y, na.rm = TRUE), 4)),
-          paste("Q1:", round(quantile(y, 0.25, na.rm = TRUE), 4)),
-          paste("Q3:", round(quantile(y, 0.75, na.rm = TRUE), 4)),
-          paste("IQR:", round(IQR(y, na.rm = TRUE), 4)),
-          sep = "\n"
-        ))
-      }
-      grouped <- aggregate(df[[y_var]], by = list(df[[x_var]]), FUN = median, na.rm = TRUE)
-      names(grouped) <- c("Group", "Median")
-      grouped <- grouped[order(grouped$Median, decreasing = TRUE), , drop = FALSE]
-      top_text <- paste(utils::capture.output(print(head(grouped, 5), row.names = FALSE)), collapse = "\n")
-      return(paste(
-        "Boxplot insights",
-        paste("Y variable:", y_var),
-        paste("Grouping variable:", x_var),
-        paste("Overall median:", round(median(y, na.rm = TRUE), 4)),
-        "Top group medians:",
-        top_text,
-        sep = "\n"
-      ))
-    }
-
-    if (plot_type == "Scatter Plot") {
-      x_var <- input$viz_x_var
-      y_var <- input$viz_y_var
-      if (is.null(x_var) || is.null(y_var) || !(x_var %in% names(df)) || !(y_var %in% names(df))) {
-        return("Select numeric X and Y variables to view scatter-plot insights.")
-      }
-      if (!is.numeric(df[[x_var]]) || !is.numeric(df[[y_var]])) {
-        return("Scatter plot insights require numeric X and Y variables.")
-      }
-      complete_idx <- complete.cases(df[, c(x_var, y_var), drop = FALSE])
-      complete_n <- sum(complete_idx)
-      if (complete_n < 2) {
-        return("At least two complete numeric observations are required for scatter-plot insights.")
-      }
-      fit_df <- data.frame(x = df[[x_var]][complete_idx], y = df[[y_var]][complete_idx])
-      fit <- lm(y ~ x, data = fit_df)
-      corr_val <- suppressWarnings(cor(fit_df$x, fit_df$y))
-      slope_val <- unname(coef(fit)[2])
-      intercept_val <- unname(coef(fit)[1])
-      return(paste(
-        "Scatter plot insights",
-        paste("X variable:", x_var),
-        paste("Y variable:", y_var),
-        paste("Complete pairs:", complete_n),
-        paste("Pearson correlation:", round(corr_val, 4)),
-        paste("Linear slope:", round(slope_val, 4)),
-        paste("Linear intercept:", round(intercept_val, 4)),
-        sep = "\n"
-      ))
-    }
-
-    if (plot_type == "Bar Chart") {
-      x_var <- input$viz_x_var
-      if (is.null(x_var) || !(x_var %in% names(df))) {
-        return("Select a categorical X variable to view bar-chart insights.")
-      }
-      counts <- sort(table(as.character(df[[x_var]])), decreasing = TRUE)
-      counts <- counts[names(counts) != "NA"]
-      if (length(counts) == 0) {
-        return("The selected bar-chart variable has no non-missing values.")
-      }
-      top_counts <- data.frame(
-        Category = names(counts)[seq_len(min(5, length(counts)))],
-        Count = as.integer(counts[seq_len(min(5, length(counts)))]),
-        stringsAsFactors = FALSE
-      )
-      top_text <- paste(utils::capture.output(print(top_counts, row.names = FALSE)), collapse = "\n")
-      return(paste(
-        "Bar chart insights",
-        paste("Variable:", x_var),
-        paste("Distinct categories:", length(counts)),
-        paste("Most frequent category:", names(counts)[1]),
-        paste("Most frequent count:", as.integer(counts[1])),
-        "Top category counts:",
-        top_text,
-        sep = "\n"
-      ))
-    }
-
-    "Interactive plot insights are not available for the current settings."
-  })
-
+  
   output$viz_plot <- renderPlotly({
     req(filtered_viz_data())
     df <- filtered_viz_data()
-
+    
     shiny::validate(
       shiny::need(nrow(df) > 0, "No rows are available after the current filter settings."),
       shiny::need(ncol(df) > 0, "Select at least one column in the Interactive EDA tab.")
     )
-
+    
     plot_type <- input$viz_plot_type
     color_var <- input$viz_color_var
     use_color <- !is.null(color_var) && color_var != "None" && color_var %in% names(df)
-
+    
     if (plot_type == "Histogram") {
       x_var <- input$viz_x_var
+      
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a numeric X variable for the histogram."),
         shiny::need(is.numeric(df[[x_var]]), "Histogram requires a numeric X variable.")
       )
-
+      
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2896,7 +3737,7 @@ server <- function(input, output, session) {
           nbinsx = input$viz_bins
         )
       }
-
+      
       p <- layout(
         p,
         title = paste("Histogram of", x_var),
@@ -2904,38 +3745,53 @@ server <- function(input, output, session) {
         yaxis = list(title = "Count"),
         barmode = "overlay"
       )
+      
+      log_interactive_eda_plot(
+        plot_type = plot_type,
+        x_var = x_var,
+        y_var = "NA"
+      )
+      
       return(p)
     }
-
+    
+    
     if (plot_type == "Boxplot") {
       x_var <- input$viz_x_var
       y_var <- input$viz_y_var
-
+      
       shiny::validate(
         shiny::need(!is.null(y_var) && y_var %in% names(df), "Select a numeric Y variable for the boxplot."),
         shiny::need(is.numeric(df[[y_var]]), "Boxplot requires a numeric Y variable.")
       )
-
+      
       if (is.null(x_var) || x_var == "All Data") {
         p <- plot_ly(
           df,
           y = plot_formula(y_var),
           type = "box"
         )
-
+        
         p <- layout(
           p,
           title = paste("Boxplot of", y_var),
           xaxis = list(title = "All Data"),
           yaxis = list(title = y_var)
         )
+        
+        log_interactive_eda_plot(
+          plot_type = plot_type,
+          x_var = "All Data",
+          y_var = y_var
+        )
+        
         return(p)
       }
-
+      
       shiny::validate(
         shiny::need(x_var %in% names(df), "Select a valid grouping variable for the boxplot.")
       )
-
+      
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2952,27 +3808,35 @@ server <- function(input, output, session) {
           type = "box"
         )
       }
-
+      
       p <- layout(
         p,
         title = paste("Boxplot of", y_var, "by", x_var),
         xaxis = list(title = x_var),
         yaxis = list(title = y_var)
       )
+      
+      log_interactive_eda_plot(
+        plot_type = plot_type,
+        x_var = x_var,
+        y_var = y_var
+      )
+      
       return(p)
     }
-
+    
+    
     if (plot_type == "Scatter Plot") {
       x_var <- input$viz_x_var
       y_var <- input$viz_y_var
-
+      
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a numeric X variable for the scatter plot."),
         shiny::need(!is.null(y_var) && y_var %in% names(df), "Select a numeric Y variable for the scatter plot."),
         shiny::need(is.numeric(df[[x_var]]), "Scatter plot requires a numeric X variable."),
         shiny::need(is.numeric(df[[y_var]]), "Scatter plot requires a numeric Y variable.")
       )
-
+      
       if (use_color) {
         p <- plot_ly(
           df,
@@ -2991,20 +3855,29 @@ server <- function(input, output, session) {
           mode = "markers"
         )
       }
-
+      
       if (isTRUE(input$viz_add_trendline)) {
         complete_idx <- complete.cases(df[, c(x_var, y_var), drop = FALSE])
+        
         if (sum(complete_idx) >= 2) {
           fit_df <- data.frame(
             x = df[[x_var]][complete_idx],
             y = df[[y_var]][complete_idx]
           )
+          
           fit <- lm(y ~ x, data = fit_df)
-          x_seq <- seq(min(fit_df$x), max(fit_df$x), length.out = 100)
+          
+          x_seq <- seq(
+            min(fit_df$x),
+            max(fit_df$x),
+            length.out = 100
+          )
+          
           trend_df <- data.frame(
             x = x_seq,
             y = predict(fit, newdata = data.frame(x = x_seq))
           )
+          
           p <- add_lines(
             p,
             data = trend_df,
@@ -3015,46 +3888,66 @@ server <- function(input, output, session) {
           )
         }
       }
-
+      
       p <- layout(
         p,
         title = paste("Scatter Plot of", y_var, "vs", x_var),
         xaxis = list(title = x_var),
         yaxis = list(title = y_var)
       )
+      
+      log_interactive_eda_plot(
+        plot_type = plot_type,
+        x_var = x_var,
+        y_var = y_var
+      )
+      
       return(p)
     }
-
+    
+    
     if (plot_type == "Bar Chart") {
       x_var <- input$viz_x_var
+      
       shiny::validate(
         shiny::need(!is.null(x_var) && x_var %in% names(df), "Select a categorical X variable for the bar chart.")
       )
-
-      count_df <- as.data.frame(table(df[[x_var]], useNA = "no"), stringsAsFactors = FALSE)
+      
+      count_df <- as.data.frame(
+        table(df[[x_var]], useNA = "no"),
+        stringsAsFactors = FALSE
+      )
+      
       names(count_df) <- c("Category", "Count")
       count_df <- count_df[count_df$Category != "", , drop = FALSE]
-
+      
       shiny::validate(
         shiny::need(nrow(count_df) > 0, "The selected bar-chart variable has no non-missing values.")
       )
-
+      
       p <- plot_ly(
         count_df,
         x = ~Category,
         y = ~Count,
         type = "bar"
       )
-
+      
       p <- layout(
         p,
         title = paste("Bar Chart of", x_var),
         xaxis = list(title = x_var),
         yaxis = list(title = "Count")
       )
+      
+      log_interactive_eda_plot(
+        plot_type = plot_type,
+        x_var = x_var,
+        y_var = "NA"
+      )
+      
       return(p)
     }
-
+    
     plotly_empty(type = "scatter", mode = "markers")
   })
 }
