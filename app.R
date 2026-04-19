@@ -19,6 +19,20 @@ library(shinyjs)
 
 # ---- Global Options ----------------------------------------------------------
 options(shiny.maxRequestSize = 30 * 1024^2)  # 30 MB upload limit
+DD_APPLICATION_ID <- trimws(Sys.getenv("DD_APPLICATION_ID", unset = "b7e2907d-f502-4a58-aba3-c54042e80855"))
+DD_CLIENT_TOKEN <- trimws(Sys.getenv("DD_CLIENT_TOKEN", unset = "pubb78f2da86de4160cd3bbf6e70ab86830"))
+DD_SITE <- trimws(Sys.getenv("DD_SITE", unset = "us5.datadoghq.com"))
+DD_SERVICE <- trimws(Sys.getenv("DD_SERVICE", unset = "data-explorer-shiny"))
+DD_ENV <- trimws(Sys.getenv("DD_ENV", unset = "development"))
+DD_VERSION <- trimws(Sys.getenv("DD_VERSION", unset = "1.0.0"))
+DD_ENABLED <- nzchar(DD_APPLICATION_ID) && nzchar(DD_CLIENT_TOKEN)
+GA_ID <- Sys.getenv("GA_MEASUREMENT_ID", unset = "G-9S3DXXD385")
+GA_ENABLED <- nzchar(trimws(GA_ID))
+POSTHOG_API_KEY <- trimws(Sys.getenv("POSTHOG_API_KEY", unset = ""))
+POSTHOG_HOST <- trimws(Sys.getenv("POSTHOG_HOST", unset = "https://us.i.posthog.com"))
+POSTHOG_ENABLED <- nzchar(POSTHOG_API_KEY)
+
+
 
 # ---- Helper: Read uploaded file by extension ---------------------------------
 read_uploaded_file <- function(file_path, file_name) {
@@ -457,7 +471,121 @@ body {
 # =============================================================================
 ui <- tagList(
   useShinyjs(),
-  tags$head(tags$style(HTML(custom_css))),
+  tags$head(
+    tags$style(HTML(custom_css)),
+    tags$script(HTML(sprintf("
+      (function(appId, clientToken, site, service, envName, version, enabled) {
+        var registerDatadogMessageHandler = function() {
+          if (!window.Shiny || typeof window.Shiny.addCustomMessageHandler !== 'function' || window.__datadogActionHandlerRegistered) {
+            return;
+          }
+
+          window.__datadogActionHandlerRegistered = true;
+          window.Shiny.addCustomMessageHandler('datadog_action', function(message) {
+            if (window.DD_RUM && typeof window.DD_RUM.addAction === 'function') {
+              window.DD_RUM.addAction(message.action_name, message.context || {});
+            }
+          });
+        };
+
+        registerDatadogMessageHandler();
+
+        if (!window.__datadogActionHandlerRegistered) {
+          document.addEventListener('shiny:connected', registerDatadogMessageHandler, { once: true });
+        }
+
+        if (!enabled) {
+          return;
+        }
+
+        (function(h,o,u,n,d) {
+          h = h[d] = h[d] || { q: [], onReady: function(c) { h.q.push(c) } };
+          d = o.createElement(u);
+          d.async = 1;
+          d.src = n;
+          d.crossOrigin = 'anonymous';
+          n = o.getElementsByTagName(u)[0];
+          n.parentNode.insertBefore(d, n);
+        })(window, document, 'script', 'https://www.datadoghq-browser-agent.com/us5/v6/datadog-rum.js', 'DD_RUM');
+
+        window.DD_RUM.onReady(function() {
+          window.DD_RUM.init({
+            applicationId: appId,
+            clientToken: clientToken,
+            site: site,
+            service: service,
+            env: envName,
+            version: version,
+            sessionSampleRate: 100,
+            sessionReplaySampleRate: 20,
+            trackResources: true,
+            trackUserInteractions: true,
+            trackLongTasks: true,
+            enablePrivacyForActionName: true
+          });
+        });
+      })(%s, %s, %s, %s, %s, %s, %s);
+    ",
+    toJSON(DD_APPLICATION_ID, auto_unbox = TRUE),
+    toJSON(DD_CLIENT_TOKEN, auto_unbox = TRUE),
+    toJSON(DD_SITE, auto_unbox = TRUE),
+    toJSON(DD_SERVICE, auto_unbox = TRUE),
+    toJSON(DD_ENV, auto_unbox = TRUE),
+    toJSON(DD_VERSION, auto_unbox = TRUE),
+    if (DD_ENABLED) "true" else "false"))),
+    if (GA_ENABLED) {
+      tags$script(async = NA, src = paste0("https://www.googletagmanager.com/gtag/js?id=", GA_ID))
+    },
+    tags$script(HTML(sprintf("\n      window.dataLayer = window.dataLayer || [];\n      function gtag(){dataLayer.push(arguments);}\n\n      if (%s) {\n        gtag('js', new Date());\n        gtag('config', '%s', { send_page_view: true, debug_mode: true });\n      }\n\n      window.trackGAEvent = function(eventName, params) {\n        if (%s && typeof gtag === 'function') {\n          gtag('event', eventName, params || {});\n        }\n      };\n\n      document.addEventListener('shiny:connected', function() {\n        if (window.Shiny) {\n          Shiny.addCustomMessageHandler('ga_event', function(message) {\n            if (%s && typeof gtag === 'function') {\n              gtag('event', message.event_name, message.params || {});\n            }\n          });\n        }\n      }, { once: true });\n    ",
+    if (GA_ENABLED) "true" else "false",
+    if (GA_ENABLED) GA_ID else "",
+    if (GA_ENABLED) "true" else "false",
+    if (GA_ENABLED) "true" else "false"))),
+    tags$script(HTML(sprintf("
+      (function(apiKey, apiHost, enabled) {
+        window.trackPostHogEvent = function(eventName, properties) {
+          if (!enabled || !window.posthog || typeof window.posthog.capture !== 'function') {
+            return;
+          }
+
+          window.posthog.capture(eventName, properties || {});
+        };
+
+        var registerPostHogMessageHandler = function() {
+          if (!window.Shiny || typeof window.Shiny.addCustomMessageHandler !== 'function' || window.__posthogHandlerRegistered) {
+            return;
+          }
+
+          window.__posthogHandlerRegistered = true;
+          window.Shiny.addCustomMessageHandler('posthog_capture', function(message) {
+            window.trackPostHogEvent(message.event_name, message.properties || {});
+          });
+        };
+
+        registerPostHogMessageHandler();
+
+        if (!window.__posthogHandlerRegistered) {
+          document.addEventListener('shiny:connected', registerPostHogMessageHandler, { once: true });
+        }
+
+        if (!enabled) {
+          return;
+        }
+
+        !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split('.');2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement('script')).type='text/javascript',p.crossOrigin='anonymous',p.async=!0,p.src=s.api_host.replace('.i.posthog.com','-assets.i.posthog.com')+'/static/array.js',(r=t.getElementsByTagName('script')[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a='posthog',u.people=u.people||[],u.toString=function(t){var e='posthog';return'posthog'!==a&&(e+='.'+a),t||(e+=' (stub)'),e},u.people.toString=function(){return u.toString(1)+'.people (stub)'},o='init capture register register_once register_for_session unregister unregister_for_session getFeatureFlag getFeatureFlagPayload isFeatureEnabled reloadFeatureFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSessionId getSurveys getActiveMatchingSurveys renderSurvey canRenderSurvey getNextSurveyStep identify setPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException loadToolbar get_property getSessionProperty createPersonProfile opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing clear_opt_in_out_capturing debug'.split(' '),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+        window.posthog.init(apiKey, {
+          api_host: apiHost,
+          defaults: '2026-01-30',
+          autocapture: false,
+          capture_pageview: false,
+          capture_pageleave: true
+        });
+      })(%s, %s, %s);
+    ",
+    toJSON(POSTHOG_API_KEY, auto_unbox = TRUE),
+    toJSON(POSTHOG_HOST, auto_unbox = TRUE),
+    if (POSTHOG_ENABLED) "true" else "false")))
+  ),
   navbarPage(
   title = span(icon("chart-line"), " Data Explorer"),
   id = "main_navbar",
@@ -638,6 +766,7 @@ ui <- tagList(
         h4("Cleaning Options"),
         selectInput("missing_method", "Handle Missing Values:",
                     choices = c("None", "Drop", "Mean", "Median", "Mode")),
+        actionButton("track_cleaning_apply", "Track Cleaning Selection", class = "btn-primary"),
         checkboxInput("remove_dup", "Remove duplicates"),
         selectInput("scaling", "Scaling:",
                     choices = c("None", "Standardize", "Normalize")),
@@ -966,10 +1095,111 @@ server <- function(input, output, session) {
     )
   })
 
+  track_datadog_action <- function(action_name, context = list()) {
+    if (!isTRUE(DD_ENABLED)) {
+      return(invisible(NULL))
+    }
+
+    normalized_context <- lapply(context, function(x) {
+      if (is.null(x) || length(x) == 0) {
+        return(NA_character_)
+      }
+      if (is.logical(x)) {
+        return(unname(x)[1])
+      }
+      if (inherits(x, "Date") || inherits(x, c("POSIXct", "POSIXt"))) {
+        return(as.character(x))
+      }
+      if (is.numeric(x)) {
+        return(as.numeric(unname(x)[1]))
+      }
+      as.character(x)[1]
+    })
+
+    session$sendCustomMessage(
+      type = "datadog_action",
+      message = list(
+        action_name = action_name,
+        context = normalized_context
+      )
+    )
+
+    invisible(NULL)
+  }
+
+  track_ga_event <- function(event_name, params = list()) {
+    if (!isTRUE(GA_ENABLED)) {
+      return(invisible(NULL))
+    }
+
+    normalized_params <- lapply(params, function(x) {
+      if (is.null(x) || length(x) == 0) {
+        return(NA_character_)
+      }
+      if (is.logical(x)) {
+        return(as.character(x))
+      }
+      if (inherits(x, "Date") || inherits(x, c("POSIXct", "POSIXt"))) {
+        return(as.character(x))
+      }
+      if (is.numeric(x)) {
+        return(as.numeric(unname(x)[1]))
+      }
+      as.character(x)[1]
+    })
+
+    normalized_params$debug_mode <- TRUE
+
+    session$sendCustomMessage(
+      type = "ga_event",
+      message = list(
+        event_name = event_name,
+        params = normalized_params
+      )
+    )
+
+    invisible(NULL)
+  }
+
+  track_posthog_event <- function(event_name, properties = list()) {
+    track_ga_event(event_name, properties)
+
+    if (!isTRUE(POSTHOG_ENABLED)) {
+      return(invisible(NULL))
+    }
+
+    normalized_properties <- lapply(properties, function(x) {
+      if (is.null(x) || length(x) == 0) {
+        return(NA_character_)
+      }
+      if (is.logical(x)) {
+        return(unname(x)[1])
+      }
+      if (inherits(x, "Date") || inherits(x, c("POSIXct", "POSIXt"))) {
+        return(as.character(x))
+      }
+      if (is.numeric(x)) {
+        return(as.numeric(unname(x)[1]))
+      }
+      as.character(x)[1]
+    })
+
+    session$sendCustomMessage(
+      type = "posthog_capture",
+      message = list(
+        event_name = event_name,
+        properties = normalized_properties
+      )
+    )
+
+    invisible(NULL)
+  }
+
   log_ab_event <- function(event_name, dataset_name = "NA", tab_name = "NA") {
     condition_label <- if (identical(ab_condition(), "A")) "Control A" else "Treatment B"
     button_label <- if (identical(ab_condition(), "A")) "Load Demo Dataset" else "Try Demo Dataset Instantly"
     elapsed_seconds <- round(as.numeric(difftime(Sys.time(), session_start_time, units = "secs")), 3)
+    event_timestamp <- as.character(Sys.time())
     new_row <- data.frame(
       session_id = session_id,
       event = event_name,
@@ -978,10 +1208,36 @@ server <- function(input, output, session) {
       dataset = dataset_name,
       tab = tab_name,
       seconds_from_start = elapsed_seconds,
-      timestamp = as.character(Sys.time()),
+      timestamp = event_timestamp,
       stringsAsFactors = FALSE
     )
     ab_metrics(rbind(ab_metrics(), new_row))
+
+    track_datadog_action(
+      event_name,
+      list(
+        session_id = session_id,
+        ab_condition = condition_label,
+        button_text = button_label,
+        dataset = dataset_name,
+        tab_name = tab_name,
+        seconds_from_start = elapsed_seconds,
+        timestamp = event_timestamp
+      )
+    )
+
+    track_posthog_event(
+      event_name,
+      list(
+        session_id = session_id,
+        ab_condition = condition_label,
+        button_text = button_label,
+        dataset = dataset_name,
+        tab_name = tab_name,
+        seconds_from_start = elapsed_seconds,
+        timestamp = event_timestamp
+      )
+    )
 
     tryCatch({
       if (!dir.exists(ab_log_dir)) {
@@ -1012,14 +1268,35 @@ server <- function(input, output, session) {
       " | dataset: ", dataset_name,
       " | tab: ", tab_name,
       " | seconds_from_start: ", elapsed_seconds,
-      " | timestamp: ", new_row$timestamp
+      " | timestamp: ", event_timestamp
     ))
   }
 
-  observeEvent(TRUE, {
-    log_ab_event("session_started", dataset_name = "NA", tab_name = input$main_navbar %||% "User Guide")
-    log_ab_event("demo_cta_impression", dataset_name = input$demo_data %||% "none", tab_name = "Data Loading")
-  }, once = TRUE, ignoreInit = FALSE)
+  page_view_logged <- reactiveVal(FALSE)
+
+  observe({
+    req(!page_view_logged())
+
+    page_location <- session$clientData$url_href %||% ""
+    page_path <- session$clientData$url_pathname %||% ""
+    current_tab <- input$main_navbar %||% "User Guide"
+    current_demo <- input$demo_data %||% "none"
+
+    page_view_logged(TRUE)
+
+    isolate({
+      track_posthog_event(
+        "page_view",
+        list(
+          page_title = "Data Explorer",
+          page_location = page_location,
+          page_path = page_path
+        )
+      )
+      log_ab_event("session_started", dataset_name = "NA", tab_name = current_tab)
+      log_ab_event("demo_cta_impression", dataset_name = current_demo, tab_name = "Data Loading")
+    })
+  })
 
   observeEvent(input$main_navbar, {
     req(input$main_navbar)
@@ -1054,6 +1331,26 @@ server <- function(input, output, session) {
           first_action_logged(TRUE)
         }
         log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+        track_datadog_action(
+          "file_upload_details",
+          list(
+            file_name = input$file_upload$name,
+            file_type = ext,
+            row_count = nrow(txt_lines),
+            column_count = ncol(txt_lines),
+            is_text_file = TRUE
+          )
+        )
+        track_posthog_event(
+          "file_upload_details",
+          list(
+            file_name = input$file_upload$name,
+            file_type = ext,
+            row_count = nrow(txt_lines),
+            column_count = ncol(txt_lines),
+            is_text_file = TRUE
+          )
+        )
       } else {
         df <- read_uploaded_file(
           input$file_upload$datapath,
@@ -1075,6 +1372,26 @@ server <- function(input, output, session) {
           first_action_logged(TRUE)
         }
         log_ab_event("file_uploaded", dataset_name = input$file_upload$name, tab_name = input$main_navbar %||% "Data Loading")
+        track_datadog_action(
+          "file_upload_details",
+          list(
+            file_name = input$file_upload$name,
+            file_type = ext,
+            row_count = nrow(df),
+            column_count = ncol(df),
+            is_text_file = FALSE
+          )
+        )
+        track_posthog_event(
+          "file_upload_details",
+          list(
+            file_name = input$file_upload$name,
+            file_type = ext,
+            row_count = nrow(df),
+            column_count = ncol(df),
+            is_text_file = FALSE
+          )
+        )
       }
     }, error = function(e) {
       current_data(NULL)
@@ -1135,6 +1452,15 @@ server <- function(input, output, session) {
       }
       log_ab_event("demo_button_clicked", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
       log_ab_event("demo_dataset_loaded", dataset_name = input$demo_data, tab_name = input$main_navbar %||% "Data Loading")
+      track_posthog_event(
+        "demo_dataset_details",
+        list(
+          dataset = input$demo_data,
+          row_count = nrow(df),
+          column_count = ncol(df),
+          ab_condition = condition_label
+        )
+      )
     }
   })
 
@@ -1451,6 +1777,56 @@ server <- function(input, output, session) {
 
     df
   })
+
+  observeEvent(input$track_cleaning_apply, {
+    req(current_data(), cleaned_data())
+
+    track_datadog_action(
+      "cleaning_options_applied",
+      list(
+        missing_method = input$missing_method %||% "None",
+        remove_duplicates = isTRUE(input$remove_dup),
+        scaling = input$scaling %||% "None",
+        encoding = input$encoding %||% "None",
+        remove_outliers = isTRUE(input$remove_outliers),
+        trim_text = isTRUE(input$trim_text),
+        lowercase_text = isTRUE(input$lowercase_text),
+        blank_to_na = isTRUE(input$blank_to_na),
+        standardize_common_labels = isTRUE(input$standardize_common_labels),
+        parse_numeric_like = isTRUE(input$parse_numeric_like),
+        try_parse_dates = isTRUE(input$try_parse_dates),
+        extra_outlier_treatment = input$extra_outlier_treatment %||% "None",
+        rows_before = nrow(current_data()),
+        rows_after = nrow(cleaned_data()),
+        cols_before = ncol(current_data()),
+        cols_after = ncol(cleaned_data())
+      )
+    )
+
+    track_posthog_event(
+      "cleaning_options_applied",
+      list(
+        missing_method = input$missing_method %||% "None",
+        remove_duplicates = isTRUE(input$remove_dup),
+        scaling = input$scaling %||% "None",
+        encoding = input$encoding %||% "None",
+        remove_outliers = isTRUE(input$remove_outliers),
+        trim_text = isTRUE(input$trim_text),
+        lowercase_text = isTRUE(input$lowercase_text),
+        blank_to_na = isTRUE(input$blank_to_na),
+        standardize_common_labels = isTRUE(input$standardize_common_labels),
+        parse_numeric_like = isTRUE(input$parse_numeric_like),
+        try_parse_dates = isTRUE(input$try_parse_dates),
+        extra_outlier_treatment = input$extra_outlier_treatment %||% "None",
+        rows_before = nrow(current_data()),
+        rows_after = nrow(cleaned_data()),
+        cols_before = ncol(current_data()),
+        cols_after = ncol(cleaned_data())
+      )
+    )
+
+    showNotification("Cleaning options tracked to PostHog.", type = "message", duration = 3)
+  }, ignoreInit = TRUE)
 
   output$cleaned_preview <- renderDT({
     req(cleaned_data())
@@ -1770,6 +2146,13 @@ server <- function(input, output, session) {
     engineered_data(cleaned_data())
     fe_log("Reset feature-engineered dataset back to cleaned data.")
     showNotification("Feature engineering reset to cleaned data.", type = "message")
+    track_posthog_event(
+      "feature_engineering_reset",
+      list(
+        rows_after = nrow(cleaned_data()),
+        cols_after = ncol(cleaned_data())
+      )
+    )
   })
 
   observeEvent(input$apply_math_feature, {
@@ -1803,6 +2186,16 @@ server <- function(input, output, session) {
     fe_log(paste0("Created math feature '", new_col, "' using ",
                   input$fe_math_col1, " ", input$fe_math_operator, " ", input$fe_math_col2, "."))
     showNotification(paste("Created new feature:", new_col), type = "message")
+    track_posthog_event(
+      "feature_math_created",
+      list(
+        new_column = new_col,
+        col1 = input$fe_math_col1,
+        operator = input$fe_math_operator,
+        col2 = input$fe_math_col2,
+        total_columns_after = ncol(df)
+      )
+    )
   })
 
   observeEvent(input$apply_bin_feature, {
@@ -1848,6 +2241,15 @@ server <- function(input, output, session) {
     fe_log(paste0("Created binned feature '", new_col, "' from column '",
                   input$fe_bin_col, "' with ", input$fe_bin_k, " bins."))
     showNotification(paste("Created binned feature:", new_col), type = "message")
+    track_posthog_event(
+      "feature_bin_created",
+      list(
+        new_column = new_col,
+        source_column = input$fe_bin_col,
+        bins = input$fe_bin_k,
+        total_columns_after = ncol(df)
+      )
+    )
   })
 
   observeEvent(input$apply_interaction_feature, {
@@ -1872,6 +2274,15 @@ server <- function(input, output, session) {
     fe_log(paste0("Created interaction feature '", new_col, "' using ",
                   input$fe_inter_col1, " * ", input$fe_inter_col2, "."))
     showNotification(paste("Created interaction feature:", new_col), type = "message")
+    track_posthog_event(
+      "feature_interaction_created",
+      list(
+        new_column = new_col,
+        col1 = input$fe_inter_col1,
+        col2 = input$fe_inter_col2,
+        total_columns_after = ncol(df)
+      )
+    )
   })
 
   observeEvent(input$apply_rename_column, {
@@ -1895,6 +2306,14 @@ server <- function(input, output, session) {
 
     fe_log(paste0("Renamed column '", input$fe_rename_old, "' to '", new_name, "'."))
     showNotification(paste("Renamed", input$fe_rename_old, "to", new_name), type = "message")
+    track_posthog_event(
+      "feature_column_renamed",
+      list(
+        old_name = input$fe_rename_old,
+        new_name = new_name,
+        total_columns_after = ncol(df)
+      )
+    )
   })
 
   observeEvent(input$apply_drop_columns, {
@@ -1917,6 +2336,14 @@ server <- function(input, output, session) {
 
     fe_log(paste0("Dropped column(s): ", paste(input$fe_drop_cols, collapse = ", "), "."))
     showNotification("Selected columns dropped.", type = "warning")
+    track_posthog_event(
+      "feature_columns_dropped",
+      list(
+        dropped_columns = paste(input$fe_drop_cols, collapse = ", "),
+        dropped_count = length(input$fe_drop_cols),
+        total_columns_after = ncol(df)
+      )
+    )
   })
 
   output$fe_before_preview <- renderDT({
@@ -2290,6 +2717,14 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       req(filtered_viz_data())
+      track_posthog_event(
+        "interactive_eda_download",
+        list(
+          row_count = nrow(filtered_viz_data()),
+          column_count = ncol(filtered_viz_data()),
+          plot_type = input$viz_plot_type %||% "Unknown"
+        )
+      )
       utils::write.csv(filtered_viz_data(), file, row.names = FALSE)
     }
   )
@@ -2625,4 +3060,3 @@ server <- function(input, output, session) {
 }
 
 app <- shinyApp(ui = ui, server = server)
-
