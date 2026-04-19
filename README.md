@@ -135,6 +135,53 @@ This structure supports later statistical analysis and documentation of data qua
 ## Deployment / Execution Note
 The app is designed to run locally as a fully reproducible Shiny application. Both experimental conditions can be reproduced either through random session assignment or manually through URL parameters (`?group=A` and `?group=B`).
 
+## Datadog RUM Setup
+The main app now loads Datadog Browser RUM on startup. By default it uses the Datadog identifiers currently configured in `app.R`, and you can override them with environment variables before launch:
+
+- `DD_APPLICATION_ID`
+- `DD_CLIENT_TOKEN`
+- `DD_SITE` (default `us5.datadoghq.com`)
+- `DD_SERVICE` (default `data-explorer-shiny`)
+- `DD_ENV` (default `development`)
+- `DD_VERSION` (default `1.0.0`)
+
+Example:
+
+```bash
+export DD_APPLICATION_ID=b7e2907d-f502-4a58-aba3-c54042e80855
+export DD_CLIENT_TOKEN=pubb78f2da86de4160cd3bbf6e70ab86830
+export DD_SITE=us5.datadoghq.com
+R -e "shiny::runApp()"
+```
+
+## Where To Check Datadog Data
+After you launch the app and interact with it, you can check Datadog in these places:
+
+- `Digital Experience > RUM Explorer`
+  - Select the `abtest` application.
+  - For browser/session activity, inspect event types such as Sessions, Views, Resources, Long Tasks, and Errors.
+  - For your custom actions, switch the event type to `Actions` and filter for action names such as `session_started`, `demo_cta_impression`, `tab_viewed`, `demo_button_clicked`, `demo_dataset_loaded`, `file_upload_details`, and `cleaning_options_applied`.
+- `Digital Experience > Session Replay` or `User Sessions`
+  - Review individual sessions, page activity, and automatically collected click interactions.
+- `Application Management > Generate Metrics`
+  - If you want long-lived chartable metrics from these RUM actions, create RUM-based custom metrics from the action events.
+
+## PostHog Setup
+The Shiny app sends browser analytics events to PostHog when these environment variables are set before launch:
+
+- `POSTHOG_API_KEY` - your PostHog project API key
+- `POSTHOG_HOST` - your PostHog ingestion host (defaults to `https://us.i.posthog.com`)
+
+Example:
+
+```bash
+export POSTHOG_API_KEY=phc_your_project_key
+export POSTHOG_HOST=https://us.i.posthog.com
+R -e "shiny::runApp()"
+```
+
+If `POSTHOG_API_KEY` is not set, the app still runs and PostHog tracking stays disabled.
+
 ## Repository Structure
 ```text
 .
