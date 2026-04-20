@@ -1,28 +1,28 @@
 # Data Explorer — Project 3 A/B Testing Experiment
 
 ## Overview
-This repository contains our **Project 3** submission for **Designing and Conducting an Experiment (A/B Test)**. We adapted our Shiny web application from the previous project into an experimental framework and tested whether changing the wording of the main demo-dataset call-to-action (CTA) button affects early user engagement.
+This repository contains our **Project 3** submission for **Designing and Conducting an Experiment (A/B Test)**. We extended our Shiny web application into a controlled A/B testing framework to evaluate whether changing the wording of the main demo-dataset call-to-action (CTA) button affects early user engagement.
 
-The application still allows users to:
-- upload and preview datasets,
-- clean and preprocess data,
-- engineer features,
-- perform exploratory data analysis,
-- use interactive visualizations,
-- and edit `.txt` files directly in the app.
+The application supports:
+- uploading and previewing datasets,
+- cleaning and preprocessing data,
+- engineering features,
+- exploratory data analysis,
+- interactive visualizations,
+- and direct `.txt` file editing inside the app.
 
-For this project, we introduced an A/B testing layer while keeping the underlying app functionality unchanged.
+For this project, we introduced an A/B testing layer while keeping the rest of the app behavior unchanged.
 
 ---
 
 ## Research Question
 **Does changing the demo dataset CTA button text increase early user engagement in the Data Loading tab of the Shiny app?**
 
-More specifically, we test whether a more action-oriented CTA leads to more users beginning interaction with the app.
+More specifically, we test whether a more action-oriented CTA leads to stronger early interaction with the app.
 
 ---
 
-## Hypothesis
+## Hypotheses
 ### Null Hypothesis (H0)
 Changing the CTA button text has **no effect** on early user engagement.
 
@@ -51,19 +51,18 @@ The **only modified interface variable** is the text shown on the primary demo C
 All other parts of the app remain identical across groups, including:
 - layout,
 - dataset choices,
-- app functionality,
-- data preview behavior,
 - upload flow,
+- data preview behavior,
 - cleaning tools,
 - feature engineering,
 - EDA outputs,
-- and visual styling.
+- interactive EDA behavior,
+- and overall visual styling.
 
+This design helps ensure that observed differences can be attributed as directly as possible to CTA wording.
 
-This ensures that observed differences can be attributed as directly as possible to the CTA wording.
-
-## Justification for the Experimental Factor
-We selected the demo CTA button text as the experimental factor because it is a simple and isolated interface change that may influence whether a user begins interacting with the app. This allows us to test an interface-design hypothesis while keeping all other functionality unchanged.
+### Justification for the Experimental Factor
+We selected the demo CTA button text because it is a simple, isolated, high-visibility interface change that may influence whether a user begins interacting with the app. It is therefore an appropriate factor for a low-cost, high-clarity A/B test.
 
 ---
 
@@ -71,54 +70,60 @@ We selected the demo CTA button text as the experimental factor because it is a 
 Users are assigned to one of the two groups at the **session level**.
 
 ### Default behavior
-If no group is specified in the URL, the app randomly assigns the user to:
+If no group is specified in the URL, the app randomly assigns the session to:
 - **Group A**, or
 - **Group B**
 
 ### Manual testing option
 To make testing reproducible, a version can also be forced through URL parameters:
-- `?group=A` → Control version
-- `?group=B` → Treatment version
+- `?group=A` → control version
+- `?group=B` → treatment version
 
-This makes it easy to verify both versions manually and supports reproducibility.
+This makes both versions easy to verify manually and supports reproducibility.
 
 ---
 
 ## Metrics Collected
-To align the experiment with the rubric and project instructions, we log structured A/B testing events for each session.
+To align the experiment with the rubric and project instructions, the app logs structured A/B testing events for each session.
 
-### Primary Metric
-- **Demo CTA click-through / demo dataset start rate**
-  - measured by the event: `demo_button_clicked`
+### Core A/B events
+- `session_started`
+- `demo_cta_impression`
+- `demo_button_clicked`
+- `demo_dataset_loaded`
+- `demo_load_failed`
+- `first_action_completed`
+- `tab_viewed`
+- `file_uploaded`
+- `file_upload_details`
 
-### Secondary Metrics
-- **Demo dataset successfully loaded**
-  - event: `demo_dataset_loaded`
-- **Time to first action**
-  - measured as `seconds_from_start` at the first `first_action_completed` event
-- **General user navigation / engagement**
-  - event: `tab_viewed`
-- **Alternative first interaction via upload**
-  - event: `file_uploaded`
-- **Session start and CTA exposure**
-  - events: `session_started`, `demo_cta_impression`
+### Additional engagement events
+The current app also logs deeper interaction events, including:
+- `cleaning_options_applied`
+- `feature_engineering_reset`
+- `feature_math_created`
+- `feature_bin_created`
+- `feature_interaction_created`
+- `feature_column_renamed`
+- `feature_columns_dropped`
+- `eda_plot_generated`
+- `eda_plot_generated_detail`
+- `interactive_eda_download`
 
-These metrics allow us to evaluate both direct response to the CTA and broader early engagement behavior.
+### Primary outcome for the A/B test
+- **Demo CTA engagement**, measured through `demo_button_clicked`
+
+### Secondary outcomes
+- **Demo dataset successfully loaded**, measured through `demo_dataset_loaded`
+- **Time to first action**, measured through `seconds_from_start` at the first `first_action_completed` event
+- **Broader early engagement**, measured through `tab_viewed`, `file_uploaded`, and related interaction logs
 
 ---
 
-## Member 1 Implementation Scope
-This repository supports Member 1 responsibilities by:
-- creating two app versions through control and treatment CTA wording,
-- preserving identical functionality across both versions,
-- implementing session-level random assignment,
-- organizing the project in a reproducible GitHub repository,
-- and documenting how to run and test the experiment.
-
 ## Logged Data Schema
-The app exports session-level A/B metrics as a CSV file.
+The app writes structured A/B metrics to a local CSV log and also emits browser analytics events.
 
-Each record includes:
+Each local event record includes:
 - `session_id` — unique session identifier
 - `event` — event type
 - `condition` — `Control A` or `Treatment B`
@@ -128,18 +133,51 @@ Each record includes:
 - `seconds_from_start` — elapsed time since session start
 - `timestamp` — event timestamp
 
-This structure supports later statistical analysis and documentation of data quality.
+This schema supports later statistical analysis and documentation of data quality.
 
 ---
 
-## Deployment / Execution Note
-The app is designed to run locally as a fully reproducible Shiny application. Both experimental conditions can be reproduced either through random session assignment or manually through URL parameters (`?group=A` and `?group=B`).
+## Running the App Locally
+Open an R session in the project root and run:
 
-## Datadog RUM Setup
-The main app now loads Datadog Browser RUM on startup. By default it uses the Datadog identifiers currently configured in `app.R`, and you can override them with environment variables before launch:
+```r
+options(shiny.launch.browser = TRUE)
+shiny::runApp("app.R")
+```
 
+Or from a shell:
+
+```bash
+R -e "shiny::runApp('app.R')"
+```
+
+Both experimental conditions can be reproduced through random session assignment or manually through URL parameters (`?group=A` and `?group=B`).
+
+---
+
+## Analytics Integrations
+The current code supports **three analytics paths** in addition to the local CSV log:
+- Datadog Browser RUM
+- Google Analytics 4
+- PostHog
+
+### 1. Local CSV logging (always available)
+The app always writes A/B event logs to:
+
+```text
+logs/ab_metrics_log.csv
+```
+
+relative to the app directory.
+
+### 2. Datadog Browser RUM
+Datadog Browser RUM is enabled when both of the following are non-empty:
 - `DD_APPLICATION_ID`
 - `DD_CLIENT_TOKEN`
+
+The current `app.R` uses these environment variables:
+- `DD_APPLICATION_ID` (default currently set in code)
+- `DD_CLIENT_TOKEN` (default currently set in code)
 - `DD_SITE` (default `us5.datadoghq.com`)
 - `DD_SERVICE` (default `data-explorer-shiny`)
 - `DD_ENV` (default `development`)
@@ -151,39 +189,87 @@ Example:
 export DD_APPLICATION_ID=b7e2907d-f502-4a58-aba3-c54042e80855
 export DD_CLIENT_TOKEN=pubb78f2da86de4160cd3bbf6e70ab86830
 export DD_SITE=us5.datadoghq.com
-R -e "shiny::runApp()"
+export DD_SERVICE=data-explorer-shiny
+export DD_ENV=development
+export DD_VERSION=1.0.0
+R -e "shiny::runApp('app.R')"
 ```
 
-## Where To Check Datadog Data
-After you launch the app and interact with it, you can check Datadog in these places:
+### 3. Google Analytics 4
+GA4 is enabled when `GA_MEASUREMENT_ID` is non-empty. The current code uses:
+- `GA_MEASUREMENT_ID` (default currently set in code as `G-3L7WXSWEK7`)
 
-- `Digital Experience > RUM Explorer`
-  - Select the `abtest` application.
-  - For browser/session activity, inspect event types such as Sessions, Views, Resources, Long Tasks, and Errors.
-  - For your custom actions, switch the event type to `Actions` and filter for action names such as `session_started`, `demo_cta_impression`, `tab_viewed`, `demo_button_clicked`, `demo_dataset_loaded`, `file_upload_details`, and `cleaning_options_applied`.
-- `Digital Experience > Session Replay` or `User Sessions`
-  - Review individual sessions, page activity, and automatically collected click interactions.
-- `Application Management > Generate Metrics`
-  - If you want long-lived chartable metrics from these RUM actions, create RUM-based custom metrics from the action events.
+Example:
 
-## PostHog Setup
-The Shiny app sends browser analytics events to PostHog when these environment variables are set before launch:
+```bash
+export GA_MEASUREMENT_ID=G-3L7WXSWEK7
+R -e "shiny::runApp('app.R')"
+```
 
-- `POSTHOG_API_KEY` - your PostHog project API key
-- `POSTHOG_HOST` - your PostHog ingestion host (defaults to `https://us.i.posthog.com`)
+### 4. PostHog
+PostHog tracking is enabled when:
+- `POSTHOG_API_KEY` is set
+
+The current code uses:
+- `POSTHOG_API_KEY`
+- `POSTHOG_HOST` (default `https://us.i.posthog.com`)
 
 Example:
 
 ```bash
 export POSTHOG_API_KEY=phc_your_project_key
 export POSTHOG_HOST=https://us.i.posthog.com
-R -e "shiny::runApp()"
+R -e "shiny::runApp('app.R')"
 ```
 
 If `POSTHOG_API_KEY` is not set, the app still runs and PostHog tracking stays disabled.
 
+---
+
+## Where to Check Datadog Data
+After launching the app and interacting with it, Datadog data can be inspected in:
+
+- `Digital Experience > RUM Explorer`
+  - Select the `abtest` application.
+  - For browser/session activity, inspect Sessions, Views, Resources, Long Tasks, and Errors.
+  - For custom experiment actions, switch the event type to `Actions` and filter events such as:
+    - `session_started`
+    - `demo_cta_impression`
+    - `demo_button_clicked`
+    - `demo_dataset_loaded`
+    - `first_action_completed`
+    - `tab_viewed`
+    - `file_upload_details`
+    - `cleaning_options_applied`
+- `Digital Experience > Session Replay`
+  - Review browser sessions and automatically captured interactions.
+- `Application Management > Generate Metrics`
+  - Create long-lived metrics from RUM action events if needed.
+
+---
+
 ## Repository Structure
 ```text
 .
-├── app1.R
-└── README.md
+├── app.R
+├── README.md
+└── logs/
+    └── ab_metrics_log.csv   # created after the app is run
+```
+
+---
+
+## Reproducibility Notes
+This repository is designed to support reproducibility by providing:
+- a single main Shiny app file,
+- built-in control/treatment assignment,
+- local event logging,
+- optional analytics integrations,
+- and documented instructions for testing both versions.
+
+For manual verification, launch the app with:
+- `?group=A` for control
+- `?group=B` for treatment
+
+This allows both versions to be reproduced consistently during grading or QA.
+
