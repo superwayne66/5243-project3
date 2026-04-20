@@ -49,6 +49,7 @@ Users are assigned to one of the two versions at the session level. For manual t
 ```text
 ?group=A
 ?group=B
+```
 
 The only experimental variable is the demo CTA button wording. Other app components, including dataset choices, upload flow, data preview, cleaning tools, feature engineering tools, and EDA outputs, remain unchanged.
 
@@ -92,6 +93,26 @@ Google Analytics 4 was used to collect event-level user interaction data. The da
 ├── 6.png
 ├── 7.png
 └── 8.png
+```
+
+---
+
+## Running the App Locally
+
+To run the app locally in R:
+
+```r
+options(shiny.launch.browser = TRUE)
+shiny::runApp("app.R")
+```
+
+Or from the terminal:
+
+```bash
+R -e "shiny::runApp('app.R')"
+```
+
+---
 
 ## Analysis Workflow
 
@@ -108,20 +129,12 @@ The analysis workflow includes:
 
 ## Key Findings
 
-The project successfully implemented a Shiny-based A/B testing framework 
-and collected user interaction data through Google Analytics 4. The experiment 
-compared the original CTA wording, **“Load Demo Dataset,”** with the revised wording, 
-**“Try Demo Dataset Instantly.”**
+The project successfully implemented a Shiny-based A/B testing framework and collected user interaction data through Google Analytics 4. The experiment compared the original CTA wording, **“Load Demo Dataset,”** with the revised wording, **“Try Demo Dataset Instantly.”**
 
-Because the sample size may be limited and some sessions may come from development 
-testing, the results should be interpreted as exploratory rather than fully conclusive.
+Because the sample size may be limited and some sessions may come from development testing, the results should be interpreted as exploratory rather than fully conclusive.
 
 ---
 
 ## Limitations and Future Work
 
-This project focuses on one interface change: the demo dataset CTA button text.
-While this helps isolate the wording effect, other design factors such as button color, position, 
-layout, and instructions were not tested. Future work should collect more real user sessions over 
-a longer period, filter out developer testing sessions more carefully, and track more downstream 
-actions such as data preview, cleaning, feature engineering, and EDA.
+This project focuses on one interface change: the demo dataset CTA button text. While this helps isolate the wording effect, other design factors such as button color, position, layout, and instructions were not tested. Future work should collect more real user sessions over a longer period, filter out developer testing sessions more carefully, and track more downstream actions such as data preview, cleaning, feature engineering, and EDA.
