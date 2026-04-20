@@ -78,6 +78,7 @@ Google Analytics 4 was used to collect event-level user interaction data. The da
 
 ```text
 .
+├── 5243_Project3_Final Report_Team15.pdf
 ├── app.R
 ├── README.md
 ├── ab_metrics.csv
@@ -85,17 +86,22 @@ Google Analytics 4 was used to collect event-level user interaction data. The da
 ├── ab_event_counts_by_variant.csv
 ├── ab_test_summary_by_variant.csv
 ├── ab_test_analysis.ipynb
-├── 1.png
-├── 2.png
-├── 3.png
-├── 4.png
-├── 5.png
-├── 6.png
-├── 7.png
-└── 8.png
+└── datadog_consolidated_wide.csv
 ```
 
----
+### File Descriptions
+
+| File | Description |
+|---|---|
+| `5243_Project3_Final Report_Team15.pdf` | Final written report for the project. |
+| `app.R` | Main Shiny application file with A/B testing logic and GA4 event tracking. |
+| `README.md` | Project overview and reproduction instructions. |
+| `ab_metrics.csv` | Exported or processed A/B testing event data. |
+| `ab_session_summary.csv` | Session-level summary used for A/B comparison. |
+| `ab_event_counts_by_variant.csv` | Event counts summarized by Version A and Version B. |
+| `ab_test_summary_by_variant.csv` | Summary statistics comparing the two experimental groups. |
+| `ab_test_analysis.ipynb` | Python notebook for cleaning, EDA, visualization, and statistical testing. |
+| `datadog_consolidated_wide.csv` | Additional consolidated analytics data used for reference or validation. |
 
 ## Running the App Locally
 
